@@ -277,6 +277,8 @@ def test_gc_preserves_reachable_data(store):
     # Create tree
     tree = ProllyTree(pattern=0.0001, seed=42, store=store)
     data = [(str(i).encode(), f'value{i}'.encode()) for i in range(100)]
+    # Sort data since byte strings sort lexicographically (b'9' > b'10')
+    data.sort(key=lambda x: x[0])
     tree.insert_batch(data, verbose=False)
     hash1 = tree._hash_node(tree.root)
 
@@ -299,7 +301,7 @@ def test_gc_preserves_reachable_data(store):
 
     # Verify the modified value is there
     items_dict = dict(items)
-    assert items_dict[50] == 'modified'
+    assert items_dict[b'50'] == b'modified'
 
 
 def test_gc_stats_repr(store):
