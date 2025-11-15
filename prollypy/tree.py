@@ -27,40 +27,6 @@ from .store import Store, MemoryStore, CachedFSStore
 from .cursor import TreeCursor
 
 
-class BatchStats:
-    """Statistics for a single batch operation."""
-    __slots__ = ('nodes_created', 'leaves_created', 'internals_created',
-                 'nodes_reused', 'subtrees_reused', 'nodes_read')
-
-    def __init__(self):
-        self.nodes_created: int = 0
-        self.leaves_created: int = 0
-        self.internals_created: int = 0
-        self.nodes_reused: int = 0
-        self.subtrees_reused: int = 0
-        self.nodes_read: int = 0
-
-    def reset(self):
-        """Reset all counters to zero."""
-        self.nodes_created = 0
-        self.leaves_created = 0
-        self.internals_created = 0
-        self.nodes_reused = 0
-        self.subtrees_reused = 0
-        self.nodes_read = 0
-
-    def to_dict(self) -> dict[str, int]:
-        """Convert to dictionary for backwards compatibility."""
-        return {
-            'nodes_created': self.nodes_created,
-            'leaves_created': self.leaves_created,
-            'internals_created': self.internals_created,
-            'nodes_reused': self.nodes_reused,
-            'subtrees_reused': self.subtrees_reused,
-            'nodes_read': self.nodes_read,
-        }
-
-
 class ProllyTree:
     def __init__(self, pattern=0.25, seed=42, store: Optional[Store] = None, validate=False):
         """
@@ -697,3 +663,37 @@ class ProllyTree:
             entry = cursor.next()
 
         return (True, None, None, None, None)
+
+
+class BatchStats:
+    """Statistics for a single batch operation."""
+    __slots__ = ('nodes_created', 'leaves_created', 'internals_created',
+                 'nodes_reused', 'subtrees_reused', 'nodes_read')
+
+    def __init__(self):
+        self.nodes_created: int = 0
+        self.leaves_created: int = 0
+        self.internals_created: int = 0
+        self.nodes_reused: int = 0
+        self.subtrees_reused: int = 0
+        self.nodes_read: int = 0
+
+    def reset(self):
+        """Reset all counters to zero."""
+        self.nodes_created = 0
+        self.leaves_created = 0
+        self.internals_created = 0
+        self.nodes_reused = 0
+        self.subtrees_reused = 0
+        self.nodes_read = 0
+
+    def to_dict(self) -> dict[str, int]:
+        """Convert to dictionary for backwards compatibility."""
+        return {
+            'nodes_created': self.nodes_created,
+            'leaves_created': self.leaves_created,
+            'internals_created': self.internals_created,
+            'nodes_reused': self.nodes_reused,
+            'subtrees_reused': self.subtrees_reused,
+            'nodes_read': self.nodes_read,
+        }
