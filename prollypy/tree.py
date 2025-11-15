@@ -187,10 +187,6 @@ class ProllyTree:
         Core incremental rebuild logic.
         Returns: new node (possibly with different structure)
         """
-        if verbose:
-            node_type = 'Leaf' if node.is_leaf else 'Internal'
-            print(f"\n_rebuild_with_mutations: {node_type} node with {len(node.keys)} keys, {len(mutations)} mutations")
-
         if not mutations:
             # No mutations for this subtree - REUSE it!
             return node
@@ -362,12 +358,6 @@ class ProllyTree:
                         internal_nodes.append(current_internal)
                         current_internal = Node(is_leaf=False)
                         roll_hash = self.seed  # Reset hash for next node
-                        if verbose:
-                            print(f"  -> Internal node split at separator {separator} (hash={roll_hash} < {self.pattern})")
-                else:
-                    # Empty child node - skip it
-                    if verbose:
-                        print(f"  -> Warning: child {i+1} has no keys, skipping separator")
 
         # Add the last internal node (but only if it has multiple children)
         if current_internal.values:
@@ -397,8 +387,6 @@ class ProllyTree:
             node = internal_nodes[0]
             if len(node.values) == 1:
                 # Unwrap single-child internal node - return the child directly
-                if verbose:
-                    print(f"  -> Unwrapping single-child internal node")
                 child_hash = node.values[0]
                 child = self._get_node(child_hash)
                 if child is None:
