@@ -55,7 +55,8 @@ def benchmark_insertion(
     base_path: str = "/tmp/prollypy_bench",
     batch_size: int = 1000,
     print_tree: bool = False,
-    print_histograms: bool = True
+    print_histograms: bool = True,
+    sort_globally: bool = True
 ) -> dict:
     """Run insertion benchmark and return statistics.
 
@@ -71,6 +72,7 @@ def benchmark_insertion(
         batch_size: Number of rows to insert per batch
         print_tree: Whether to print tree structure at end
         print_histograms: Whether to print node size histograms
+        sort_globally: If True, sort all keys globally; if False, sort only within batches
 
     Returns:
         Dictionary containing benchmark results and statistics
@@ -86,11 +88,28 @@ def benchmark_insertion(
         raise ValueError(f"Unknown store type: {store_type}")
 
     # Generate random data
-    print(f"\nGenerating {num_pairs:,} random key-value pairs...")
+    sorting_mode = "globally" if sort_globally else "per-batch"
+    print(f"\nGenerating {num_pairs:,} random key-value pairs (sorting: {sorting_mode})...")
     gen_start = time.time()
-    mutations = generate_random_kv_pairs(num_pairs, key_length, value_length, seed=seed + 1000)
-    gen_time = time.time() - gen_start
-    print(f"  Generated in {gen_time:.2f}s ({num_pairs/gen_time:,.0f} pairs/sec)")
+
+    if sort_globally:
+        # Original behavior: generate and sort all keys globally
+        mutations = generate_random_kv_pairs(num_pairs, key_length, value_length, seed=seed + 1000)
+        gen_time = time.time() - gen_start
+        print(f"  Generated and sorted globally in {gen_time:.2f}s ({num_pairs/gen_time:,.0f} pairs/sec)")
+    else:
+        # New behavior: generate unsorted, will sort per batch later
+        if seed is not None:
+            random.seed(seed + 1000)
+
+        mutations = []
+        for i in range(num_pairs):
+            key = f"key_{i:010d}_" + ''.join(random.choices(string.ascii_letters + string.digits, k=key_length-15))
+            value = ''.join(random.choices(string.ascii_letters + string.digits + ' ', k=value_length))
+            mutations.append((key, value))
+
+        gen_time = time.time() - gen_start
+        print(f"  Generated (unsorted) in {gen_time:.2f}s ({num_pairs/gen_time:,.0f} pairs/sec)")
 
     # Create tree
     print(f"\nCreating ProllyTree (pattern={pattern}, seed={seed}, store={store_type})...")
@@ -108,6 +127,10 @@ def benchmark_insertion(
         start_idx = i * batch_size
         end_idx = min((i + 1) * batch_size, len(mutations))
         batch = mutations[start_idx:end_idx]
+
+        # Sort batch if not globally sorted
+        if not sort_globally:
+            batch = sorted(batch, key=lambda x: x[0])
 
         print(f"  Batch {i+1}/{num_batches} ({len(batch):,} rows)... ", end='', flush=True)
         batch_stats = tree.insert_batch(batch, verbose=False)
@@ -166,6 +189,7 @@ def benchmark_insertion(
         "value_length": value_length,
         "validate": validate,
         "batch_size": batch_size,
+        "sort_globally": sort_globally,
         "generation_time": gen_time,
         "insertion_time": insert_time,
         "total_time": gen_time + insert_time,
@@ -187,6 +211,8 @@ def print_results(results: dict):
     print("\nConfiguration:")
     print(f"  Number of pairs:  {results['num_pairs']:,}")
     print(f"  Batch size:       {results.get('batch_size', 'N/A'):,}")
+    sort_mode = "global" if results.get('sort_globally', True) else "per-batch"
+    print(f"  Sort mode:        {sort_mode}")
     print(f"  Pattern:          {results['pattern']}")
     print(f"  Seed:             {results['seed']}")
     print(f"  Store type:       {results['store_type']}")
@@ -273,6 +299,11 @@ def main():
         help="Number of rows to insert per batch (default: 1000)"
     )
     parser.add_argument(
+        "--sort-batches-only",
+        action="store_true",
+        help="Sort keys within each batch only (not globally). Batches may have interleaved keys."
+    )
+    parser.add_argument(
         "--print-tree",
         action="store_true",
         help="Print tree structure at the end"
@@ -320,7 +351,8 @@ def main():
                 base_path=args.base_path,
                 batch_size=args.batch_size,
                 print_tree=False,  # Don't print tree in comparison mode
-                print_histograms=False  # Don't print histograms in comparison mode
+                print_histograms=False,  # Don't print histograms in comparison mode
+                sort_globally=not args.sort_batches_only
             )
             all_results.append(results)
 
@@ -352,7 +384,8 @@ def main():
             base_path=args.base_path,
             batch_size=args.batch_size,
             print_tree=args.print_tree,
-            print_histograms=not args.no_histograms
+            print_histograms=not args.no_histograms,
+            sort_globally=not args.sort_batches_only
         )
         print_results(results)
 
