@@ -10,13 +10,13 @@ import pytest
 import random
 
 from prollypy.tree import ProllyTree
-from prollypy.store import MemoryStore
+from prollypy.store import MemoryBlockStore
 
 
 @pytest.fixture
 def store():
-    """Create a shared MemoryStore for testing."""
-    return MemoryStore()
+    """Create a shared MemoryBlockStore for testing."""
+    return MemoryBlockStore()
 
 
 def test_insertion_order_independence_simple(store):
@@ -233,7 +233,7 @@ def test_insertion_order_independence_different_seeds_fail():
     This is a negative test to ensure our other tests are actually meaningful -
     if different seeds produced the same structure, our tests wouldn't prove anything.
     """
-    store = MemoryStore()
+    store = MemoryBlockStore()
     # Use more keys and higher pattern to ensure splits happen
     keys = [(str(i).encode(), f"value_{i}".encode()) for i in range(500)]
 

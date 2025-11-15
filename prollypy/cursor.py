@@ -6,7 +6,7 @@ independent of tree structure.
 """
 
 from typing import Optional, Tuple
-from .store import Store
+from .store import BlockStore
 from .node import Node
 
 
@@ -19,7 +19,7 @@ class TreeCursor:
     It also supports peeking at the next hash to enable efficient subtree skipping.
     """
 
-    def __init__(self, store: Store, root_hash: bytes, seek_to: Optional[bytes] = None):
+    def __init__(self, store: BlockStore, root_hash: bytes, seek_to: Optional[bytes] = None):
         """
         Initialize cursor at the beginning of the tree or at a specific prefix.
 

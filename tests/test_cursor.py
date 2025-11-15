@@ -4,14 +4,14 @@ Tests for TreeCursor.
 
 import pytest
 from prollypy.tree import ProllyTree
-from prollypy.store import MemoryStore
+from prollypy.store import MemoryBlockStore
 from prollypy.cursor import TreeCursor
 
 
 @pytest.fixture
 def sample_tree():
     """Create a sample tree with known data."""
-    store = MemoryStore()
+    store = MemoryBlockStore()
     tree = ProllyTree(pattern=0.0001, seed=42, store=store)
 
     # Insert data that will create multiple nodes
@@ -88,7 +88,7 @@ def test_cursor_seek_to_end(sample_tree):
 
 def test_cursor_seek_with_prefix():
     """Test seeking to a prefix."""
-    store = MemoryStore()
+    store = MemoryBlockStore()
     tree = ProllyTree(pattern=0.0001, seed=42, store=store)
 
     # Insert data with different prefixes
@@ -116,7 +116,7 @@ def test_cursor_seek_with_prefix():
 
 def test_cursor_empty_tree():
     """Test cursor on empty tree."""
-    store = MemoryStore()
+    store = MemoryBlockStore()
     tree = ProllyTree(pattern=0.0001, seed=42, store=store)
     root_hash = tree._hash_node(tree.root)
 
@@ -128,7 +128,7 @@ def test_cursor_empty_tree():
 
 def test_cursor_single_item():
     """Test cursor with single item tree."""
-    store = MemoryStore()
+    store = MemoryBlockStore()
     tree = ProllyTree(pattern=0.0001, seed=42, store=store)
     tree.insert_batch([(b'key1', b'value1')], verbose=False)
     root_hash = tree._hash_node(tree.root)

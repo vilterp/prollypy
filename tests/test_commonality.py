@@ -4,14 +4,14 @@ Tests for commonality analysis.
 
 import pytest
 from prollypy.tree import ProllyTree
-from prollypy.store import MemoryStore
+from prollypy.store import MemoryBlockStore
 from prollypy.commonality import compute_commonality, collect_node_hashes
 
 
 @pytest.fixture
 def shared_store():
     """Create a shared memory store for tests."""
-    return MemoryStore()
+    return MemoryBlockStore()
 
 
 def test_identical_trees(shared_store):
