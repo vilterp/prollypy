@@ -95,7 +95,7 @@ def compute_commonality(store: Store, left_hash: str, right_hash: str) -> Dict[s
     }
 
 
-def print_commonality_report(left_hash: str, right_hash: str, stats: Dict[str, Any]) -> None:
+def print_commonality_report(left_hash: str, right_hash: str, stats: Dict[str, Any]):
     """
     Print a formatted commonality report.
 

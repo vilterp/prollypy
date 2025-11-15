@@ -17,8 +17,9 @@ Provides a cursor abstraction that traverses trees in sorted key order,
 independent of tree structure.
 """
 
-from typing import Optional, Tuple, Any
+from typing import Optional, Tuple
 from .store import Store
+from .node import Node
 
 
 class TreeCursor:
@@ -138,7 +139,7 @@ class TreeCursor:
 
         return None
 
-    def next(self) -> Optional[Tuple[Any, Any]]:
+    def next(self) -> Optional[Tuple[str, str]]:
         """
         Advance to the next key-value pair.
 
