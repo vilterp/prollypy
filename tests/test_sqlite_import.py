@@ -1,15 +1,3 @@
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 """
 Tests for SQLite database import functionality.
 
@@ -17,17 +5,13 @@ Creates test SQLite databases, imports them, and verifies the contents.
 """
 
 import pytest
-import sys
 import sqlite3
 import tempfile
 import os
 from pathlib import Path
 
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from db import DB
-from store import MemoryStore, create_store_from_spec
+from prollypy.db import DB
+from prollypy.store import MemoryStore, create_store_from_spec
 
 
 @pytest.fixture
@@ -94,7 +78,7 @@ def temp_sqlite_db():
 @pytest.fixture
 def imported_db(temp_sqlite_db):
     """Import the SQLite database and return DB instance."""
-    from cli import import_sqlite_database
+    from prollypy.cli import import_sqlite_database
 
     store = MemoryStore()
     db = DB(store=store, pattern=0.0001, seed=42)
@@ -108,7 +92,7 @@ def imported_db(temp_sqlite_db):
     tables = [row[0] for row in cursor.fetchall()]
 
     # Import each table using the import_sqlite_table function
-    from cli import import_sqlite_table
+    from prollypy.cli import import_sqlite_table
     for table_name in tables:
         import_sqlite_table(db, sqlite_conn, table_name, batch_size=100, verbose_batches=False)
 
@@ -255,7 +239,7 @@ def test_import_deterministic(temp_sqlite_db):
     db1 = DB(store=store1, pattern=0.0001, seed=42)
 
     sqlite_conn1 = sqlite3.connect(temp_sqlite_db)
-    from cli import import_sqlite_table
+    from prollypy.cli import import_sqlite_table
     cursor = sqlite_conn1.cursor()
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
     tables = [row[0] for row in cursor.fetchall()]
@@ -299,7 +283,7 @@ def test_import_empty_table(temp_sqlite_db):
     db = DB(store=store, pattern=0.0001, seed=42)
 
     sqlite_conn = sqlite3.connect(temp_sqlite_db)
-    from cli import import_sqlite_table
+    from prollypy.cli import import_sqlite_table
 
     rows_imported = import_sqlite_table(db, sqlite_conn, "empty_table", batch_size=100, verbose_batches=False)
     sqlite_conn.close()
@@ -326,7 +310,7 @@ def test_import_with_null_values(temp_sqlite_db):
     db = DB(store=store, pattern=0.0001, seed=42)
 
     sqlite_conn = sqlite3.connect(temp_sqlite_db)
-    from cli import import_sqlite_table
+    from prollypy.cli import import_sqlite_table
     import_sqlite_table(db, sqlite_conn, "users", batch_size=100, verbose_batches=False)
     sqlite_conn.close()
 
@@ -359,7 +343,7 @@ def test_import_large_batch(temp_sqlite_db):
     db = DB(store=store, pattern=0.0001, seed=42)
 
     sqlite_conn = sqlite3.connect(temp_sqlite_db)
-    from cli import import_sqlite_table
+    from prollypy.cli import import_sqlite_table
     rows_imported = import_sqlite_table(db, sqlite_conn, "users", batch_size=10, verbose_batches=False)
     sqlite_conn.close()
 
@@ -370,7 +354,7 @@ def test_import_large_batch(temp_sqlite_db):
 
 def test_full_import_workflow(temp_sqlite_db):
     """Test complete import workflow from SQLite to ProllyTree to verification."""
-    from cli import import_sqlite_database
+    from prollypy.cli import import_sqlite_database
 
     store = MemoryStore()
 
@@ -382,7 +366,7 @@ def test_full_import_workflow(temp_sqlite_db):
 
     db = DB(store=store, pattern=0.0001, seed=42)
 
-    from cli import import_sqlite_table
+    from prollypy.cli import import_sqlite_table
     total_rows = 0
     for table_name in tables:
         rows = import_sqlite_table(db, sqlite_conn, table_name, batch_size=100, verbose_batches=False)

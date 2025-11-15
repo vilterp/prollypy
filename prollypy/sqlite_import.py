@@ -20,9 +20,9 @@ import sqlite3
 import time
 from typing import Optional, List
 
-from db import DB
-from store import Store, CachedFSStore
-from cursor import TreeCursor
+from .db import DB
+from .store import Store, CachedFSStore
+from .cursor import TreeCursor
 
 
 def validate_tree_sorted(db: DB, table_name: str) -> bool:

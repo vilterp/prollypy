@@ -1,29 +1,12 @@
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 """
 Tests for diff algorithm.
 """
 
 import pytest
-import sys
-from pathlib import Path
 
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from tree import ProllyTree
-from store import MemoryStore
-from diff import diff, Differ, Added, Deleted, Modified
+from prollypy.tree import ProllyTree
+from prollypy.store import MemoryStore
+from prollypy.diff import diff, Differ, Added, Deleted, Modified
 
 
 @pytest.fixture
@@ -500,7 +483,7 @@ def test_diff_reports_identical_value_as_deleted_added_bug(store):
     This test uses the real-world hashes that exhibit the bug.
     """
     # Use the actual stored trees that exhibit the bug
-    from store import create_store_from_spec
+    from prollypy.store import create_store_from_spec
     real_store = create_store_from_spec('cached-file://.prolly')
 
     # These are real commit hashes that have the bug

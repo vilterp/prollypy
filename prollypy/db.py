@@ -18,8 +18,8 @@ Provides a high-level database interface on top of the ProllyTree key-value stor
 
 import json
 from typing import List, Dict, Any, Optional, Iterator, Tuple
-from tree import ProllyTree
-from store import Store, create_store_from_spec
+from .tree import ProllyTree
+from .store import Store, create_store_from_spec
 
 
 class Table:

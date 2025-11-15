@@ -18,7 +18,7 @@ and which are shared between them.
 """
 
 from typing import Set, Dict, Any
-from store import Store
+from .store import Store
 
 
 def collect_node_hashes(store: Store, root_hash: str) -> Set[str]:

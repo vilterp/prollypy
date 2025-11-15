@@ -22,8 +22,9 @@ Features:
 
 import hashlib
 from typing import Optional
-from node import Node
-from store import Store, MemoryStore
+from .node import Node
+from .store import Store, MemoryStore, CachedFSStore
+from .cursor import TreeCursor
 
 
 class BatchStats:
@@ -166,7 +167,6 @@ class ProllyTree:
         self.reset_stats()
 
         # Track cache stats before this batch (if using CachedFSStore)
-        from store import CachedFSStore
         cache_stats_before = None
         if isinstance(self.store, CachedFSStore):
             cache_stats_before = {
@@ -628,8 +628,6 @@ class ProllyTree:
         Yields:
             Tuples of (key, value) for keys matching the prefix
         """
-        from cursor import TreeCursor
-
         # Get root hash
         root_hash = self._hash_node(self.root)
 
@@ -714,8 +712,6 @@ class ProllyTree:
             If valid: (True, None, None, None, None)
             If invalid: (False, error_msg, position, prev_key, current_key)
         """
-        from cursor import TreeCursor
-
         root_hash = self._hash_node(self.root)
         cursor = TreeCursor(self.store, root_hash)
 

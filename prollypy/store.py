@@ -22,8 +22,8 @@ from typing import Protocol, Optional, Iterator
 import json
 import os
 from collections import OrderedDict
-from stats import Stats
-from node import Node
+from .stats import Stats
+from .node import Node
 
 
 class Store(Protocol):

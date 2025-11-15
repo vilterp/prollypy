@@ -19,8 +19,8 @@ based on content hashes.
 
 from dataclasses import dataclass
 from typing import Any, Iterator, Union, Optional
-from store import Store
-from cursor import TreeCursor
+from .store import Store
+from .cursor import TreeCursor
 
 
 @dataclass(frozen=True)

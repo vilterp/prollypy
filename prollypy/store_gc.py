@@ -19,7 +19,7 @@ and comparing with all stored nodes.
 
 from typing import Set, Iterator
 from dataclasses import dataclass
-from store import Store
+from .store import Store
 
 
 @dataclass

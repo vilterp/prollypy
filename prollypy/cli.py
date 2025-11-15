@@ -21,12 +21,13 @@ import sqlite3
 import time
 from typing import Optional, List
 
-from db import DB
-from store import create_store_from_spec, CachedFSStore
-from diff import Differ, Added, Deleted, Modified
-from sqlite_import import import_sqlite_database, import_sqlite_table, validate_tree_sorted
-from commonality import compute_commonality, print_commonality_report
-from store_gc import garbage_collect, find_garbage_nodes, GCStats
+from .db import DB
+from .store import create_store_from_spec, CachedFSStore
+from .diff import Differ, Added, Deleted, Modified
+from .sqlite_import import import_sqlite_database, import_sqlite_table, validate_tree_sorted
+from .commonality import compute_commonality, print_commonality_report
+from .store_gc import garbage_collect, find_garbage_nodes, GCStats
+from .tree import ProllyTree
 
 def dump_database(root_hash: str, store_spec: str = 'cached-file://.prolly',
                   cache_size: Optional[int] = None,
@@ -40,7 +41,6 @@ def dump_database(root_hash: str, store_spec: str = 'cached-file://.prolly',
         cache_size: Cache size for cached stores
         prefix: Optional key prefix to dump (default: dump all)
     """
-    from tree import ProllyTree
 
     print(f"Opening store: {store_spec}")
     store = create_store_from_spec(store_spec, cache_size=cache_size)
@@ -179,7 +179,6 @@ def print_tree_structure(root_hash: str, store_spec: str = 'cached-file://.proll
         prefix: Optional key prefix to filter tree visualization
         verbose: If True, show all leaf node values. If False, only show first/last keys and count.
     """
-    from tree import ProllyTree
 
     print("="*80)
     print("TREE STRUCTURE")
@@ -244,7 +243,6 @@ def get_key(root_hash: str, key: str, store_spec: str = 'cached-file://.prolly',
         store_spec: Store specification
         cache_size: Cache size for cached stores
     """
-    from tree import ProllyTree
 
     store = create_store_from_spec(store_spec, cache_size=cache_size)
 
@@ -278,7 +276,6 @@ def set_key(root_hash: str, key: str, value: str, store_spec: str = 'cached-file
         store_spec: Store specification
         cache_size: Cache size for cached stores
     """
-    from tree import ProllyTree
 
     store = create_store_from_spec(store_spec, cache_size=cache_size)
 
@@ -573,9 +570,8 @@ to preview what will be removed before actually removing it.
     args = parser.parse_args()
 
     if args.command == 'import-sqlite':
-        from sqlite_import import import_sqlite_database as do_import
         store = create_store_from_spec(args.store, cache_size=args.cache_size)
-        do_import(
+        import_sqlite_database(
             db_path=args.database,
             store=store,
             pattern=args.pattern,

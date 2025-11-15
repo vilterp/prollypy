@@ -18,7 +18,7 @@ independent of tree structure.
 """
 
 from typing import Optional, Tuple, Any
-from store import Store
+from .store import Store
 
 
 class TreeCursor:
