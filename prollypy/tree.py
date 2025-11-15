@@ -667,10 +667,6 @@ class ProllyTree:
 
             entry = cursor.next()
 
-    def verify(self) -> list[tuple[str, str]]:
-        """Verify tree structure and return all key-value pairs in order (for backwards compatibility)"""
-        return list(self.items())
-
     def validate_sorted(self) -> tuple[bool, Optional[str], Optional[int], Optional[str], Optional[str]]:
         """
         Validate that all keys in the tree are in sorted order with no duplicates.
