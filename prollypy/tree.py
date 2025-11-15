@@ -13,6 +13,7 @@ from typing import Optional, Iterator
 from .node import Node
 from .store import Store, MemoryStore, CachedFSStore
 from .cursor import TreeCursor
+from .mutator import TreeMutator
 
 
 class ProllyTree:
@@ -128,8 +129,12 @@ class ProllyTree:
                 'misses': self.store.cache_misses
             }
 
-        # Rebuild tree with mutations (always quiet during rebuild)
-        new_root = self._rebuild_with_mutations(self.root, mutations, verbose=False)
+        # Rebuild tree with mutations using TreeMutator
+        if not mutations:
+            return self._summarize_ops()
+
+        mutator = TreeMutator(self, self.root, mutations)
+        new_root = mutator.rebuild()
 
         # Store the new root (unless it was reused)
         if new_root is not self.root:
@@ -182,66 +187,6 @@ class ProllyTree:
 
         return stats
 
-    def _rebuild_with_mutations(self, node: Node, mutations: list[tuple[str, str]], verbose: bool = True) -> Node:
-        """
-        Core incremental rebuild logic using TreeCursor for uniform traversal.
-
-        This method uses TreeCursor to iterate through the old subtree and merge
-        with mutations, providing a cleaner and more uniform approach than manual
-        tree traversal. Both leaf and internal nodes are handled the same way.
-
-        Returns: new node (possibly with different structure)
-        """
-        if verbose:
-            node_type = 'Leaf' if node.is_leaf else 'Internal'
-            print(f"\n_rebuild_with_mutations: {node_type} node with {len(node.keys)} keys, {len(mutations)} mutations")
-
-        if not mutations:
-            # No mutations for this subtree - REUSE it!
-            if verbose:
-                print(f"  -> No mutations, reusing node")
-            return node
-
-        # Collect all existing entries from this subtree
-        if node.is_leaf:
-            # For leaf nodes: directly access keys/values (no need to store for cursor)
-            old_items = list(zip(node.keys, node.values))
-            if verbose:
-                print(f"  -> Collected {len(old_items)} existing entries from leaf node")
-        else:
-            # For internal nodes: use TreeCursor (children are already stored)
-            # Store node temporarily if needed for cursor traversal
-            node_hash = self._hash_node(node)
-            node_was_stored = self._get_node(node_hash) is not None
-            if not node_was_stored:
-                self.store.put_node(node_hash, node)
-
-            cursor = TreeCursor(self.store, node_hash)
-            old_items = []
-            entry = cursor.next()
-            while entry:
-                old_items.append(entry)
-                entry = cursor.next()
-
-            if verbose:
-                print(f"  -> Collected {len(old_items)} existing entries from internal node via TreeCursor")
-
-        # Merge old entries with mutations
-        merged = self._merge_sorted(old_items, mutations)
-        if verbose:
-            print(f"  -> Merged to {len(merged)} total entries")
-
-        # Build new leaf nodes from merged data (may split if too large)
-        new_leaves = self._build_leaves(merged)
-        if verbose:
-            print(f"  -> Built {len(new_leaves)} leaf nodes")
-
-        if len(new_leaves) == 1:
-            return new_leaves[0]
-        else:
-            # Multiple leaves - build internal parent (may recursively split)
-            return self._build_internal_from_children(new_leaves, verbose)
-
     def _get_first_key(self, node: Node) -> Optional[str]:
         """
         Get the first actual key in a node's subtree.
@@ -267,7 +212,7 @@ class ProllyTree:
                 return None
             return self._get_first_key(child)
 
-    def _build_internal_from_children(self, children: list[Node], verbose: bool = False) -> Node:
+    def _build_internal_from_children(self, children: list[Node]) -> Node:
         """
         Build internal node(s) from a list of children using rolling hash for splits.
 
@@ -331,12 +276,6 @@ class ProllyTree:
                         internal_nodes.append(current_internal)
                         current_internal = Node(is_leaf=False)
                         roll_hash = self.seed  # Reset hash for next node
-                        if verbose:
-                            print(f"  -> Internal node split at separator {separator} (hash={roll_hash} < {self.pattern})")
-                else:
-                    # Empty child node - skip it
-                    if verbose:
-                        print(f"  -> Warning: child {i+1} has no keys, skipping separator")
 
         # Add the last internal node (but only if it has multiple children)
         if current_internal.values:
@@ -366,8 +305,6 @@ class ProllyTree:
             node = internal_nodes[0]
             if len(node.values) == 1:
                 # Unwrap single-child internal node - return the child directly
-                if verbose:
-                    print(f"  -> Unwrapping single-child internal node")
                 child_hash = node.values[0]
                 child = self._get_node(child_hash)
                 if child is None:
@@ -382,9 +319,7 @@ class ProllyTree:
                 return node
         else:
             # Multiple internal nodes - build parent recursively
-            if verbose:
-                print(f"  -> Created {len(internal_nodes)} internal nodes, building parent...")
-            return self._build_internal_from_children(internal_nodes, verbose)
+            return self._build_internal_from_children(internal_nodes)
 
     def _merge_sorted(self, old_items: list[tuple[str, str]], new_items: list[tuple[str, str]]) -> list[tuple[str, str]]:
         """Merge two sorted lists of (key, value) tuples"""
@@ -408,16 +343,21 @@ class ProllyTree:
         result.extend(new_items[j:])
         return result
 
-    def _build_leaves(self, items: list[tuple[str, str]]) -> list[Node]:
+    def _build_leaves(self, items) -> list[Node]:
         """
         Build leaf nodes from sorted items using rolling hash for splits.
 
-        Split points are determined by rolling hash being below pattern threshold,
-        with a minimum of 2 entries per node to avoid degenerate splits.
-        """
-        if not items:
-            return []
+        Accepts an iterable (list or iterator) of (key, value) tuples and
+        builds leaf nodes by streaming through the items. Split points are
+        determined by rolling hash being below pattern threshold, with a
+        minimum of 2 entries per node to avoid degenerate splits.
 
+        Args:
+            items: Iterable of (key, value) tuples in sorted order
+
+        Returns:
+            List of leaf Node objects
+        """
         MIN_NODE_SIZE = 2  # Minimum entries per node to avoid degenerate trees
 
         leaves = []
@@ -425,7 +365,7 @@ class ProllyTree:
         current_values = []
         roll_hash = self.seed  # Start with seed
 
-        for i, (key, value) in enumerate(items):
+        for key, value in items:
             current_keys.append(key)
             current_values.append(value)
 
@@ -435,11 +375,11 @@ class ProllyTree:
             roll_hash = self._rolling_hash(roll_hash, key_bytes)
             roll_hash = self._rolling_hash(roll_hash, value_bytes)
 
-            # Split if: (1) have minimum entries AND hash below pattern OR (2) last item
+            # Split if we have minimum entries AND hash below pattern
             has_min = len(current_keys) >= MIN_NODE_SIZE
-            should_split = (has_min and roll_hash < self.pattern) or (i == len(items) - 1)
+            should_split = has_min and roll_hash < self.pattern
 
-            if should_split and current_keys:
+            if should_split:
                 leaf = Node(is_leaf=True)
                 leaf.keys = current_keys
                 leaf.values = current_values
@@ -454,6 +394,17 @@ class ProllyTree:
                 current_keys = []
                 current_values = []
                 roll_hash = self.seed  # Reset hash for next node
+
+        # Create final leaf with any remaining items
+        if current_keys:
+            leaf = Node(is_leaf=True)
+            leaf.keys = current_keys
+            leaf.values = current_values
+
+            if self.validate:
+                leaf.validate(self.store, context="_build_leaves")
+
+            leaves.append(leaf)
 
         return leaves if leaves else [Node(is_leaf=True)]
 
