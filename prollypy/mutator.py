@@ -8,13 +8,24 @@ This module provides a streaming approach to tree mutation that:
 - Reuses unmodified subtrees when possible
 """
 
-from typing import Iterator, Tuple, TYPE_CHECKING
+from typing import Iterator, Tuple, Union, Optional, TYPE_CHECKING
+from dataclasses import dataclass
 
 if TYPE_CHECKING:
     from .tree import ProllyTree
 
 from .cursor import TreeCursor
 from .node import Node
+
+
+@dataclass
+class SubtreeRef:
+    """Reference to an existing subtree that can be reused."""
+    hash: str
+
+
+# Type for items in the merge stream
+MergeItem = Union[Tuple[str, str], SubtreeRef]
 
 
 class TreeMutator:
@@ -58,16 +69,100 @@ class TreeMutator:
         Returns:
             New root node with mutations applied
         """
-        # Stream merged entries through leaf builder
+        # Stream merged entries and build children (leaves or reused subtrees)
         merged_stream = self._merge_stream()
-        leaves = self._build_leaves(merged_stream)
+        children = self._build_children(merged_stream)
 
-        if len(leaves) == 1:
-            return leaves[0]
+        if len(children) == 1:
+            return children[0]
         else:
-            return self._build_internal_from_children(leaves)
+            return self._build_internal_from_children(children)
 
-    def _merge_stream(self) -> Iterator[Tuple[str, str]]:
+    def _build_children(self, stream) -> list[Node]:
+        """
+        Build child nodes from a stream of entries and subtree reuse markers.
+
+        Handles:
+        - (key, value) entries: accumulated into new leaf nodes
+        - (REUSE_SUBTREE, hash) markers: fetched and incorporated as-is
+
+        Args:
+            stream: Iterator yielding (key, value) or (REUSE_SUBTREE, hash)
+
+        Returns:
+            List of child nodes (mix of newly built leaves and reused nodes)
+        """
+        children = []
+        current_keys = []
+        current_values = []
+        roll_hash = self.tree.seed
+        MIN_NODE_SIZE = 2
+
+        for item in stream:
+            # Check if this is a subtree reference
+            if isinstance(item, SubtreeRef):
+                # Flush any pending leaf data
+                if current_keys:
+                    leaf = Node(is_leaf=True)
+                    leaf.keys = current_keys
+                    leaf.values = current_values
+                    if self.tree.validate:
+                        leaf.validate(self.tree.store, context="_build_children")
+                    children.append(leaf)
+                    current_keys = []
+                    current_values = []
+                    roll_hash = self.tree.seed
+
+                # Add the reused child
+                child_node = self.tree._get_node(item.hash)
+                if child_node is None:
+                    raise ValueError(f"Referenced subtree {item.hash} not found in store")
+
+                # Mark this node as reused so we don't re-store it
+                child_node._reused_hash = item.hash
+                children.append(child_node)
+                continue
+
+            # Regular entry - add to current leaf
+            key, value = item
+            current_keys.append(key)
+            current_values.append(value)
+
+            # Update rolling hash
+            key_bytes = str(key).encode('utf-8')
+            value_bytes = str(value).encode('utf-8')
+            roll_hash = self.tree._rolling_hash(roll_hash, key_bytes)
+            roll_hash = self.tree._rolling_hash(roll_hash, value_bytes)
+
+            # Check if we should split
+            has_min = len(current_keys) >= MIN_NODE_SIZE
+            should_split = has_min and roll_hash < self.tree.pattern
+
+            if should_split:
+                leaf = Node(is_leaf=True)
+                leaf.keys = current_keys
+                leaf.values = current_values
+                if self.tree.validate:
+                    leaf.validate(self.tree.store, context="_build_children")
+                children.append(leaf)
+
+                # Reset for next leaf
+                current_keys = []
+                current_values = []
+                roll_hash = self.tree.seed
+
+        # Flush any remaining entries
+        if current_keys:
+            leaf = Node(is_leaf=True)
+            leaf.keys = current_keys
+            leaf.values = current_values
+            if self.tree.validate:
+                leaf.validate(self.tree.store, context="_build_children")
+            children.append(leaf)
+
+        return children if children else [Node(is_leaf=True)]
+
+    def _merge_stream(self) -> Iterator[MergeItem]:
         """
         Generator that yields merged entries from old tree and mutations.
 
@@ -75,40 +170,114 @@ class TreeMutator:
         mutations, similar to merge sort. Mutations overwrite old values
         for duplicate keys.
 
+        Optimizes by detecting and skipping unchanged subtrees, yielding
+        SubtreeRef objects instead of iterating through all their entries.
+
         Yields:
-            (key, value) tuples in sorted order
+            - (key, value) tuples for individual entries
+            - SubtreeRef objects for unchanged subtrees to reuse
         """
-        # Get first entry from cursor (or None if empty tree)
-        current = self.cursor.next() if self.cursor else None
+        if not self.cursor:
+            # No cursor, just yield all mutations
+            while self.mut_idx < len(self.mutations):
+                yield self.mutations[self.mut_idx]
+                self.mut_idx += 1
+            return
+
+        # Check for initial subtree reuse opportunity
+        current = self._try_skip_subtree()
+        if current is None:
+            current = self.cursor.next()
 
         # Merge old entries with mutations
         while current is not None and self.mut_idx < len(self.mutations):
+            # Check if this is a subtree reference
+            if isinstance(current, SubtreeRef):
+                yield current
+                current = self._try_skip_subtree()
+                if current is None:
+                    current = self.cursor.next() if self.cursor else None
+                continue
+
             key, value = current
             mut_key, mut_value = self.mutations[self.mut_idx]
 
             if key < mut_key:
                 # Old entry comes first
                 yield (key, value)
-                current = self.cursor.next() if self.cursor else None
+                current = self._try_skip_subtree()
+                if current is None:
+                    current = self.cursor.next() if self.cursor else None
             elif key == mut_key:
                 # Mutation overwrites old value
                 yield (mut_key, mut_value)
-                current = self.cursor.next() if self.cursor else None
+                current = self._try_skip_subtree()
+                if current is None:
+                    current = self.cursor.next() if self.cursor else None
                 self.mut_idx += 1
             else:
                 # Mutation comes first
                 yield (mut_key, mut_value)
                 self.mut_idx += 1
 
-        # Yield remaining old entries
+        # Yield remaining old entries (including subtree references)
         while current is not None and self.cursor is not None:
-            yield current
-            current = self.cursor.next()
+            if isinstance(current, SubtreeRef):
+                yield current
+                current = self._try_skip_subtree()
+                if current is None:
+                    current = self.cursor.next()
+            else:
+                yield current
+                current = self._try_skip_subtree()
+                if current is None:
+                    current = self.cursor.next()
 
         # Yield remaining mutations
         while self.mut_idx < len(self.mutations):
             yield self.mutations[self.mut_idx]
             self.mut_idx += 1
+
+    def _try_skip_subtree(self) -> Optional[Union[Tuple[str, str], SubtreeRef]]:
+        """
+        Check if we can skip the next subtree and reuse it.
+
+        Returns:
+            - SubtreeRef if subtree can be reused
+            - None if no subtree to skip or it contains mutations
+        """
+        if not self.cursor:
+            return None
+
+        subtree_info = self.cursor.peek_next_subtree()
+        if not subtree_info:
+            return None
+
+        child_hash, min_key, max_key = subtree_info
+
+        # Check if any remaining mutations fall in this subtree's range
+        if self.mut_idx >= len(self.mutations):
+            # No more mutations - can skip this and all remaining subtrees
+            self.cursor.skip_subtree(child_hash)
+            return SubtreeRef(child_hash)
+
+        # Check if next mutation is in this subtree's range
+        next_mut_key = self.mutations[self.mut_idx][0]
+
+        # Determine if mutation is in range [min_key, max_key)
+        in_range = True
+        if min_key is not None and next_mut_key < min_key:
+            in_range = False
+        if max_key is not None and next_mut_key >= max_key:
+            in_range = False
+
+        if not in_range:
+            # Next mutation is outside this subtree - can skip it
+            self.cursor.skip_subtree(child_hash)
+            return SubtreeRef(child_hash)
+
+        # Mutation is in range - can't skip subtree
+        return None
 
     def _build_leaves(self, items) -> list[Node]:
         """

@@ -127,6 +127,44 @@ class TreeCursor:
 
         return None
 
+    def peek_next_subtree(self) -> Optional[Tuple[str, Optional[str], Optional[str]]]:
+        """
+        Peek at the next subtree we're about to enter.
+
+        Returns:
+            (child_hash, min_key, max_key) where:
+            - child_hash: hash of the child subtree
+            - min_key: inclusive lower bound (None = -infinity)
+            - max_key: exclusive upper bound (None = +infinity)
+            Returns None if we're at a leaf or no more subtrees.
+        """
+        if not self.stack:
+            return None
+
+        # Find the deepest internal node in the stack
+        for node, idx in reversed(self.stack):
+            if not node.is_leaf and idx < len(node.values):
+                child_hash = node.values[idx]
+
+                # Determine key range based on separator keys
+                # Child i has range [keys[i-1], keys[i])
+                if idx == 0:
+                    # First child: (-∞, keys[0])
+                    min_key = None
+                    max_key = node.keys[0] if len(node.keys) > 0 else None
+                elif idx < len(node.keys):
+                    # Middle child: [keys[i-1], keys[i])
+                    min_key = node.keys[idx - 1]
+                    max_key = node.keys[idx]
+                else:
+                    # Last child: [keys[-1], +∞)
+                    min_key = node.keys[-1] if len(node.keys) > 0 else None
+                    max_key = None
+
+                return (child_hash, min_key, max_key)
+
+        return None
+
     def next(self) -> Optional[Tuple[str, str]]:
         """
         Advance to the next key-value pair.

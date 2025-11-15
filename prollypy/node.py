@@ -64,6 +64,7 @@ class Node:
         self.is_leaf: bool = is_leaf
         self.keys: list[str] = []      # Separator keys (for internal) or actual keys (for leaves)
         self.values: list[str] = []    # Child pointers (for internal) or actual values (for leaves)
+        self._reused_hash: Optional[str] = None  # Temporary marker for reused nodes during tree building
 
     def __repr__(self) -> str:
         if self.is_leaf:
