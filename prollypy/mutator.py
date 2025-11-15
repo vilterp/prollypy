@@ -89,11 +89,11 @@ class TreeMutator:
             if key < mut_key:
                 # Old entry comes first
                 yield (key, value)
-                current = self.cursor.next()
+                current = self.cursor.next() if self.cursor else None
             elif key == mut_key:
                 # Mutation overwrites old value
                 yield (mut_key, mut_value)
-                current = self.cursor.next()
+                current = self.cursor.next() if self.cursor else None
                 self.mut_idx += 1
             else:
                 # Mutation comes first
@@ -101,7 +101,7 @@ class TreeMutator:
                 self.mut_idx += 1
 
         # Yield remaining old entries
-        while current is not None:
+        while current is not None and self.cursor is not None:
             yield current
             current = self.cursor.next()
 
