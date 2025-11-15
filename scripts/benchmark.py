@@ -235,7 +235,7 @@ def print_results(results: dict):
         print(f"  Nodes reused:     {stats.get('nodes_reused', 0):,}")
 
     if results.get('tree_root_hash'):
-        print(f"  Root hash:        {results['tree_root_hash'][:16]}...")
+        print(f"  Root hash:        {results['tree_root_hash'].hex()[:32]}...")
 
     # Print disk usage if available
     if results.get('disk_size_bytes', 0) > 0:

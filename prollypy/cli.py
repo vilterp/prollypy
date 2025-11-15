@@ -288,7 +288,7 @@ def set_key(root_hash: str, key: str, value: str, store_spec: str = 'cached-file
     print(f"SET COMPLETE")
     print(f"{'='*80}")
     print(f"Old root: {root_hash}")
-    print(f"New root: {new_root_hash}")
+    print(f"New root: {new_root_hash.hex()}")
     print(f"Key:      {key}")
     print(f"Value:    {value}")
     print(f"{'='*80}")

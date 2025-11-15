@@ -164,7 +164,7 @@ def import_sqlite_table(db: DB, sqlite_conn: sqlite3.Connection, table_name: str
 
     # Print root hash
     root_hash = db.get_root_hash()
-    print(f"  Root hash: {root_hash}")
+    print(f"  Root hash: {root_hash.hex()}")
 
     # Validate if requested
     if validate:
@@ -268,7 +268,7 @@ def import_sqlite_database(db_path: str, store: Store,
     print(f"Total time: {total_time:.2f}s")
     print(f"Overall rate: {total_rate:,.0f} rows/sec")
     print(f"\n{'='*80}")
-    print(f"FINAL ROOT HASH: {final_root_hash}")
+    print(f"FINAL ROOT HASH: {final_root_hash.hex()}")
     print(f"{'='*80}")
 
     # Print final stats

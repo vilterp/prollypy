@@ -506,7 +506,7 @@ class ProllyTree:
             reused_flag = " <- REUSED!"
 
         if node.is_leaf:
-            hash_str = f"#{node_hash}" if node_hash is not None else "#root"
+            hash_str = f"#{node_hash.hex()}" if node_hash is not None else "#root"
             if verbose:
                 # Show all key-value pairs
                 data = list(zip(node.keys, node.values))
@@ -523,7 +523,7 @@ class ProllyTree:
                     last_key = node.keys[-1]
                     print(f"{prefix}{branch}LEAF {hash_str}: [{first_key} ... {last_key}] ({count} keys){reused_flag}")
         else:
-            hash_str = f"#{node_hash}" if node_hash is not None else "#root"
+            hash_str = f"#{node_hash.hex()}" if node_hash is not None else "#root"
             print(f"{prefix}{branch}INTERNAL {hash_str}: keys={node.keys}{reused_flag}")
 
             # Print children
