@@ -28,6 +28,103 @@ class SubtreeRef:
 MergeItem = Union[Tuple[str, str], SubtreeRef]
 
 
+class LevelBuilder:
+    """
+    Builder for a single level in the tree during incremental construction.
+
+    Each level accumulates children (entries for leaves, nodes for internal levels)
+    and emits completed nodes when they reach split points based on rolling hash.
+    """
+
+    def __init__(self, tree: 'ProllyTree', is_leaf: bool):
+        self.tree = tree
+        self.is_leaf = is_leaf
+        self.current_keys = []
+        self.current_values = []
+        self.roll_hash = tree.seed
+        self.MIN_SIZE = 2
+
+    def add_entry(self, key: str, value: str) -> Optional[Node]:
+        """Add a key-value entry to current leaf. Returns completed node if split."""
+        assert self.is_leaf, "add_entry only for leaf levels"
+
+        self.current_keys.append(key)
+        self.current_values.append(value)
+
+        # Update rolling hash
+        key_bytes = str(key).encode('utf-8')
+        value_bytes = str(value).encode('utf-8')
+        self.roll_hash = self.tree._rolling_hash(self.roll_hash, key_bytes)
+        self.roll_hash = self.tree._rolling_hash(self.roll_hash, value_bytes)
+
+        # Check for split
+        if len(self.current_keys) >= self.MIN_SIZE and self.roll_hash < self.tree.pattern:
+            return self._emit_current()
+
+        return None
+
+    def add_child(self, child: Node) -> Optional[Node]:
+        """Add a child node to current internal. Returns completed node if split."""
+        assert not self.is_leaf, "add_child only for internal levels"
+
+        # Add separator for previous child (if any)
+        if len(self.current_values) > 0:
+            # Separator is the first key of THIS child (which comes after previous child)
+            separator = self.tree._get_first_key(child)
+            if separator:
+                self.current_keys.append(separator)
+
+                # Update rolling hash with separator
+                sep_bytes = str(separator).encode('utf-8')
+                self.roll_hash = self.tree._rolling_hash(self.roll_hash, sep_bytes)
+
+        # Get or compute child hash
+        if hasattr(child, '_reused_hash') and child._reused_hash:
+            child_hash = child._reused_hash
+            delattr(child, '_reused_hash')
+        else:
+            child_hash = self.tree._store_node(child)
+
+        self.current_values.append(child_hash)
+
+        # Update rolling hash with child hash
+        hash_bytes = str(child_hash).encode('utf-8')
+        self.roll_hash = self.tree._rolling_hash(self.roll_hash, hash_bytes)
+
+        # Check for split (need at least 2 children on both sides)
+        if (len(self.current_values) >= self.MIN_SIZE and
+            self.roll_hash < self.tree.pattern):
+            return self._emit_current()
+
+        return None
+
+    def finalize(self) -> Optional[Node]:
+        """Emit final node with remaining data."""
+        if not self.current_keys and not self.current_values:
+            return None
+        return self._emit_current()
+
+    def _emit_current(self) -> Optional[Node]:
+        """Create node from current accumulated data and reset."""
+        if not self.current_values:
+            return None
+
+        node = Node(is_leaf=self.is_leaf)
+        node.keys = self.current_keys
+        node.values = self.current_values
+
+        if self.tree.validate:
+            context = "LevelBuilder (leaf)" if self.is_leaf else "LevelBuilder (internal)"
+            node.validate(self.tree.store, context=context)
+
+        # Reset for next node
+        self.current_keys = []
+        self.current_values = []
+        self.roll_hash = self.tree.seed
+
+        return node
+
+
 class TreeMutator:
     """
     Handles incremental tree rebuilding with mutations using streaming merge.
@@ -62,105 +159,100 @@ class TreeMutator:
 
             self.cursor = TreeCursor(tree.store, root_hash)
 
+        # Stack for streaming tree construction
+        # stack[0] = leaf level, stack[1] = first internal level, etc.
+        self.stack: list[LevelBuilder] = [LevelBuilder(tree, is_leaf=True)]
+
     def rebuild(self) -> Node:
         """
-        Rebuild tree with mutations using streaming merge.
+        Rebuild tree with mutations using stack-based streaming merge.
+
+        Processes the merge stream incrementally, building the tree bottom-up
+        using a stack of level builders. Never materializes full child lists.
 
         Returns:
             New root node with mutations applied
         """
-        # Stream merged entries and build children (leaves or reused subtrees)
-        merged_stream = self._merge_stream()
-        children = self._build_children(merged_stream)
-
-        if len(children) == 1:
-            return children[0]
-        else:
-            return self._build_internal_from_children(children)
-
-    def _build_children(self, stream) -> list[Node]:
-        """
-        Build child nodes from a stream of entries and subtree reuse markers.
-
-        Handles:
-        - (key, value) entries: accumulated into new leaf nodes
-        - (REUSE_SUBTREE, hash) markers: fetched and incorporated as-is
-
-        Args:
-            stream: Iterator yielding (key, value) or (REUSE_SUBTREE, hash)
-
-        Returns:
-            List of child nodes (mix of newly built leaves and reused nodes)
-        """
-        children = []
-        current_keys = []
-        current_values = []
-        roll_hash = self.tree.seed
-        MIN_NODE_SIZE = 2
-
-        for item in stream:
-            # Check if this is a subtree reference
+        # Process merge stream, adding items to the stack
+        for item in self._merge_stream():
             if isinstance(item, SubtreeRef):
-                # Flush any pending leaf data
-                if current_keys:
-                    leaf = Node(is_leaf=True)
-                    leaf.keys = current_keys
-                    leaf.values = current_values
-                    if self.tree.validate:
-                        leaf.validate(self.tree.store, context="_build_children")
-                    children.append(leaf)
-                    current_keys = []
-                    current_values = []
-                    roll_hash = self.tree.seed
-
-                # Add the reused child
+                # Reused subtree - fetch and add as child
                 child_node = self.tree._get_node(item.hash)
                 if child_node is None:
                     raise ValueError(f"Referenced subtree {item.hash} not found in store")
-
-                # Mark this node as reused so we don't re-store it
                 child_node._reused_hash = item.hash
-                children.append(child_node)
+                self._add_child_to_stack(child_node)
+            else:
+                # Regular entry - add to leaf level
+                key, value = item
+                self._add_entry_to_stack(key, value)
+
+        # Finalize all levels from bottom to top
+        return self._finalize_stack()
+
+    def _add_entry_to_stack(self, key: str, value: str):
+        """Add a key-value entry to the leaf level, propagating splits up the stack."""
+        completed = self.stack[0].add_entry(key, value)
+        if completed:
+            self._add_child_to_stack(completed)
+
+    def _add_child_to_stack(self, child: Node):
+        """Add a child node to the parent level, creating levels as needed."""
+        level = 1
+        current_child = child
+
+        while current_child is not None:
+            # Ensure parent level exists
+            if level >= len(self.stack):
+                self.stack.append(LevelBuilder(self.tree, is_leaf=False))
+
+            # Add child to parent level
+            completed = self.stack[level].add_child(current_child)
+            if completed is None:
+                break  # No split, we're done
+
+            # Parent level split, propagate upward
+            current_child = completed
+            level += 1
+
+    def _finalize_stack(self) -> Node:
+        """Finalize all levels and return final root node."""
+        # Finalize from bottom to top, propagating final nodes upward
+        for level in range(len(self.stack)):
+            completed = self.stack[level].finalize()
+            if completed is None:
                 continue
 
-            # Regular entry - add to current leaf
-            key, value = item
-            current_keys.append(key)
-            current_values.append(value)
+            # Propagate final node upward
+            if level + 1 < len(self.stack):
+                # Add to existing parent level
+                parent_completed = self.stack[level + 1].add_child(completed)
+                # If parent split during this add, we need to handle it
+                if parent_completed is not None:
+                    # Parent split - need to propagate even further up
+                    current_level = level + 2
+                    current_child = parent_completed
+                    while current_child is not None:
+                        if current_level >= len(self.stack):
+                            self.stack.append(LevelBuilder(self.tree, is_leaf=False))
+                        next_completed = self.stack[current_level].add_child(current_child)
+                        current_child = next_completed
+                        current_level += 1
+            else:
+                # Need new parent level for the final node
+                parent = LevelBuilder(self.tree, is_leaf=False)
+                parent.add_child(completed)
+                self.stack.append(parent)
 
-            # Update rolling hash
-            key_bytes = str(key).encode('utf-8')
-            value_bytes = str(value).encode('utf-8')
-            roll_hash = self.tree._rolling_hash(roll_hash, key_bytes)
-            roll_hash = self.tree._rolling_hash(roll_hash, value_bytes)
+        # The top level should have exactly one node (the root)
+        # Finalize it to get the final root
+        if len(self.stack) > 0:
+            root = self.stack[-1].finalize()
+            if root is not None:
+                return root
 
-            # Check if we should split
-            has_min = len(current_keys) >= MIN_NODE_SIZE
-            should_split = has_min and roll_hash < self.tree.pattern
-
-            if should_split:
-                leaf = Node(is_leaf=True)
-                leaf.keys = current_keys
-                leaf.values = current_values
-                if self.tree.validate:
-                    leaf.validate(self.tree.store, context="_build_children")
-                children.append(leaf)
-
-                # Reset for next leaf
-                current_keys = []
-                current_values = []
-                roll_hash = self.tree.seed
-
-        # Flush any remaining entries
-        if current_keys:
-            leaf = Node(is_leaf=True)
-            leaf.keys = current_keys
-            leaf.values = current_values
-            if self.tree.validate:
-                leaf.validate(self.tree.store, context="_build_children")
-            children.append(leaf)
-
-        return children if children else [Node(is_leaf=True)]
+        # If we get here, return an empty tree
+        return Node(is_leaf=True)
 
     def _merge_stream(self) -> Iterator[MergeItem]:
         """
@@ -278,177 +370,3 @@ class TreeMutator:
 
         # Mutation is in range - can't skip subtree
         return None
-
-    def _build_leaves(self, items) -> list[Node]:
-        """
-        Build leaf nodes from sorted items using rolling hash for splits.
-
-        Accepts an iterable (list or iterator) of (key, value) tuples and
-        builds leaf nodes by streaming through the items. Split points are
-        determined by rolling hash being below pattern threshold, with a
-        minimum of 2 entries per node to avoid degenerate splits.
-
-        Args:
-            items: Iterable of (key, value) tuples in sorted order
-
-        Returns:
-            List of leaf Node objects
-        """
-        MIN_NODE_SIZE = 2  # Minimum entries per node to avoid degenerate trees
-
-        leaves = []
-        current_keys = []
-        current_values = []
-        roll_hash = self.tree.seed  # Start with seed
-
-        for key, value in items:
-            current_keys.append(key)
-            current_values.append(value)
-
-            # Update rolling hash with the key and value bytes
-            key_bytes = str(key).encode('utf-8')
-            value_bytes = str(value).encode('utf-8')
-            roll_hash = self.tree._rolling_hash(roll_hash, key_bytes)
-            roll_hash = self.tree._rolling_hash(roll_hash, value_bytes)
-
-            # Split if we have minimum entries AND hash below pattern
-            has_min = len(current_keys) >= MIN_NODE_SIZE
-            should_split = has_min and roll_hash < self.tree.pattern
-
-            if should_split:
-                leaf = Node(is_leaf=True)
-                leaf.keys = current_keys
-                leaf.values = current_values
-
-                # Validate leaf before adding
-                if self.tree.validate:
-                    leaf.validate(self.tree.store, context="_build_leaves")
-
-                leaves.append(leaf)
-
-                # Reset for next leaf
-                current_keys = []
-                current_values = []
-                roll_hash = self.tree.seed  # Reset hash for next node
-
-        # Create final leaf with any remaining items
-        if current_keys:
-            leaf = Node(is_leaf=True)
-            leaf.keys = current_keys
-            leaf.values = current_values
-
-            if self.tree.validate:
-                leaf.validate(self.tree.store, context="_build_leaves")
-
-            leaves.append(leaf)
-
-        return leaves if leaves else [Node(is_leaf=True)]
-
-    def _build_internal_from_children(self, children: list[Node]) -> Node:
-        """
-        Build internal node(s) from a list of children using rolling hash for splits.
-
-        Args:
-            children: List of Node objects
-
-        Returns:
-            Node (single child, or newly created internal node)
-        """
-        if len(children) == 0:
-            raise ValueError("Cannot build internal node with no children")
-
-        if len(children) == 1:
-            # Single child - just return it (no need for parent)
-            return children[0]
-
-        # Build internal nodes using rolling hash to determine split points
-        # Strategy: Don't split unless we have at least 2 children on BOTH sides
-        internal_nodes = []
-        current_internal = Node(is_leaf=False)
-        roll_hash = self.tree.seed  # Start with seed
-
-        for i, child in enumerate(children):
-            # Store or reuse child hash
-            if hasattr(child, '_reused_hash'):
-                child_hash = getattr(child, '_reused_hash')
-                delattr(child, '_reused_hash')
-            else:
-                child_hash = self.tree._store_node(child)
-
-            current_internal.values.append(child_hash)
-
-            # Update rolling hash with the child hash
-            hash_bytes = str(child_hash).encode('utf-8')
-            roll_hash = self.tree._rolling_hash(roll_hash, hash_bytes)
-
-            # Add separator key (first key of next child)
-            if i < len(children) - 1:
-                next_child = children[i + 1]
-                # Get the first actual key from the next child's subtree
-                separator = self.tree._get_first_key(next_child)
-                if separator is not None:
-                    current_internal.keys.append(separator)
-
-                    # Update rolling hash with separator key
-                    sep_bytes = str(separator).encode('utf-8')
-                    roll_hash = self.tree._rolling_hash(roll_hash, sep_bytes)
-
-                    # Check if we should split here using rolling hash
-                    # Require:
-                    # - At least 2 children in current node
-                    # - At least 2 children remaining (including next)
-                    MIN_CHILDREN = 2
-                    children_remaining = len(children) - i - 1
-                    if (roll_hash < self.tree.pattern and
-                        len(current_internal.values) >= MIN_CHILDREN and
-                        children_remaining >= MIN_CHILDREN):
-                        # Split point! Validate and save current internal
-                        if self.tree.validate:
-                            current_internal.validate(self.tree.store, context="_build_internal_from_children (split)")
-                        internal_nodes.append(current_internal)
-                        current_internal = Node(is_leaf=False)
-                        roll_hash = self.tree.seed  # Reset hash for next node
-
-        # Add the last internal node (but only if it has multiple children)
-        if current_internal.values:
-            if len(current_internal.values) == 1 and not internal_nodes:
-                # Only one child total - just return it directly
-                child_hash = current_internal.values[0]
-                child = self.tree._get_node(child_hash)
-                if child is None:
-                    raise ValueError(f"Child node {child_hash} not found in store")
-                return child
-            elif len(current_internal.values) > 1:
-                # Validate before adding
-                if self.tree.validate:
-                    current_internal.validate(self.tree.store, context="_build_internal_from_children (end)")
-                internal_nodes.append(current_internal)
-            elif internal_nodes:
-                # Single child but we already have other nodes - validate and add it
-                if self.tree.validate:
-                    current_internal.validate(self.tree.store, context="_build_internal_from_children (single child)")
-                internal_nodes.append(current_internal)
-
-        # Handle edge cases
-        if len(internal_nodes) == 0:
-            raise ValueError("No internal nodes created")
-        elif len(internal_nodes) == 1:
-            # Single internal node
-            node = internal_nodes[0]
-            if len(node.values) == 1:
-                # Unwrap single-child internal node - return the child directly
-                child_hash = node.values[0]
-                child = self.tree._get_node(child_hash)
-                if child is None:
-                    raise ValueError(f"Child node {child_hash} not found in store")
-                return child
-            elif len(node.values) == 0:
-                raise ValueError("Internal node has no children")
-            else:
-                # Validate before returning
-                if self.tree.validate:
-                    node.validate(self.tree.store, context="_build_internal_from_children (return single)")
-                return node
-        else:
-            # Multiple internal nodes - build parent recursively
-            return self._build_internal_from_children(internal_nodes)

@@ -141,6 +141,11 @@ class TreeCursor:
         if not self.stack:
             return None
 
+        # If we're currently at a leaf, we're not about to enter a subtree
+        # We need to finish this leaf first
+        if self.stack and self.stack[-1][0].is_leaf:
+            return None
+
         # Find the deepest internal node in the stack
         for node, idx in reversed(self.stack):
             if not node.is_leaf and idx < len(node.values):
@@ -196,8 +201,13 @@ class TreeCursor:
 
                 return self.current
             else:
-                # Shouldn't happen, but handle gracefully
+                # Past the end of this leaf - advance to next
                 self.stack.pop()
+                self._advance_to_next_leaf()
+                # Try again with the new position
+                if not self.stack:
+                    self.current = None
+                    return None
                 return self.next()
         else:
             # At internal node: shouldn't happen in normal traversal
@@ -238,20 +248,27 @@ class TreeCursor:
         """
         Skip over a subtree entirely without visiting its entries.
 
+        This is called after peek_next_subtree returns a subtree we want to skip.
+        At that point, the cursor is positioned BEFORE the subtree (idx points to it).
+
         Args:
             subtree_hash: Hash of subtree to skip
         """
-        # Find this hash in our stack and advance past it
+        if not self.stack:
+            return
+
+        # Find the internal node that contains this subtree
         for i in range(len(self.stack) - 1, -1, -1):
             node, idx = self.stack[i]
-            if not node.is_leaf and idx > 0 and idx - 1 < len(node.values):
-                if node.values[idx - 1] == subtree_hash:
-                    # We just descended into this subtree, need to skip it
-                    # Pop everything below and including this level
+            if not node.is_leaf and idx < len(node.values):
+                if node.values[idx] == subtree_hash:
+                    # Found it! Advance past this child
+                    self.stack[i] = (node, idx + 1)
+                    # Clear any deeper stack levels (in case we were mid-traversal)
                     self.stack = self.stack[:i+1]
-                    # The index is already advanced, so just continue
+                    # Now advance to the next leaf
                     self._advance_to_next_leaf()
                     return
 
-        # If we can't find it, just continue normally
+        # If we can't find it, something is wrong, but try to continue
         self._advance_to_next_leaf()
