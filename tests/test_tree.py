@@ -68,8 +68,8 @@ def test_insert_into_empty_tree(empty_tree):
     """Test inserting batch into empty tree."""
     _, stats = _do_insert(
         empty_tree,
-        mutations=[(i, f"v{i}") for i in [2, 4, 6, 8, 10, 12]],
-        expected_contents=[(i, f"v{i}") for i in [2, 4, 6, 8, 10, 12]],
+        mutations=[(f"{i:04d}".encode(), f"v{i}".encode()) for i in [2, 4, 6, 8, 10, 12]],
+        expected_contents=[(f"{i:04d}".encode(), f"v{i}".encode()) for i in [2, 4, 6, 8, 10, 12]],
     )
     assert stats['nodes_created'] > 0
 
@@ -78,14 +78,14 @@ def test_insert_interleaved_keys(empty_tree):
     """Test inserting batch with interleaved keys."""
     tree1, _ = _do_insert(
         empty_tree,
-        mutations=[(i, f"v{i}") for i in [2, 4, 6, 8, 10, 12]],
-        expected_contents=[(i, f"v{i}") for i in [2, 4, 6, 8, 10, 12]],
+        mutations=[(f"{i:04d}".encode(), f"v{i}".encode()) for i in [2, 4, 6, 8, 10, 12]],
+        expected_contents=[(f"{i:04d}".encode(), f"v{i}".encode()) for i in [2, 4, 6, 8, 10, 12]],
     )
 
     _, stats = _do_insert(
         tree1,
-        mutations=[(i, f"v{i}") for i in [1, 3, 5, 7, 9, 11]],
-        expected_contents=[(i, f"v{i}") for i in range(1, 13)],
+        mutations=[(f"{i:04d}".encode(), f"v{i}".encode()) for i in [1, 3, 5, 7, 9, 11]],
+        expected_contents=[(f"{i:04d}".encode(), f"v{i}".encode()) for i in range(1, 13)],
     )
     assert stats['nodes_created'] > 0
 
@@ -94,21 +94,21 @@ def test_insert_unaffected_range(empty_tree):
     """Test inserting batch with keys in unaffected range."""
     tree1, _ = _do_insert(
         empty_tree,
-        mutations=[(i, f"v{i}") for i in [2, 4, 6, 8, 10, 12]],
-        expected_contents=[(i, f"v{i}") for i in [2, 4, 6, 8, 10, 12]],
+        mutations=[(f"{i:04d}".encode(), f"v{i}".encode()) for i in [2, 4, 6, 8, 10, 12]],
+        expected_contents=[(f"{i:04d}".encode(), f"v{i}".encode()) for i in [2, 4, 6, 8, 10, 12]],
     )
 
     tree2, _ = _do_insert(
         tree1,
-        mutations=[(i, f"v{i}") for i in [1, 3, 5, 7, 9, 11]],
-        expected_contents=[(i, f"v{i}") for i in range(1, 13)],
+        mutations=[(f"{i:04d}".encode(), f"v{i}".encode()) for i in [1, 3, 5, 7, 9, 11]],
+        expected_contents=[(f"{i:04d}".encode(), f"v{i}".encode()) for i in range(1, 13)],
     )
 
     # Insert keys > 12, which should only affect the right subtree
     _, stats = _do_insert(
         tree2,
-        mutations=[(i, f"v{i}") for i in [13, 14, 15, 16]],
-        expected_contents=[(i, f"v{i}") for i in range(1, 17)],
+        mutations=[(f"{i:04d}".encode(), f"v{i}".encode()) for i in [13, 14, 15, 16]],
+        expected_contents=[(f"{i:04d}".encode(), f"v{i}".encode()) for i in range(1, 17)],
     )
     # Note: subtree reuse depends on how splits occur with the rolling hash
     assert stats['nodes_created'] > 0
@@ -118,27 +118,27 @@ def test_large_insert_multiple_splits(empty_tree):
     """Test large insert causing multiple splits."""
     tree1, _ = _do_insert(
         empty_tree,
-        mutations=[(i, f"v{i}") for i in [2, 4, 6, 8, 10, 12]],
-        expected_contents=[(i, f"v{i}") for i in [2, 4, 6, 8, 10, 12]],
+        mutations=[(f"{i:04d}".encode(), f"v{i}".encode()) for i in [2, 4, 6, 8, 10, 12]],
+        expected_contents=[(f"{i:04d}".encode(), f"v{i}".encode()) for i in [2, 4, 6, 8, 10, 12]],
     )
 
     tree2, _ = _do_insert(
         tree1,
-        mutations=[(i, f"v{i}") for i in [1, 3, 5, 7, 9, 11]],
-        expected_contents=[(i, f"v{i}") for i in range(1, 13)],
+        mutations=[(f"{i:04d}".encode(), f"v{i}".encode()) for i in [1, 3, 5, 7, 9, 11]],
+        expected_contents=[(f"{i:04d}".encode(), f"v{i}".encode()) for i in range(1, 13)],
     )
 
     tree3, _ = _do_insert(
         tree2,
-        mutations=[(i, f"v{i}") for i in [13, 14, 15, 16]],
-        expected_contents=[(i, f"v{i}") for i in range(1, 17)],
+        mutations=[(f"{i:04d}".encode(), f"v{i}".encode()) for i in [13, 14, 15, 16]],
+        expected_contents=[(f"{i:04d}".encode(), f"v{i}".encode()) for i in range(1, 17)],
     )
 
     # Insert many more keys to cause internal nodes to split
     _, stats = _do_insert(
         tree3,
-        mutations=[(i, f"v{i}") for i in range(17, 41)],  # Add 24 more keys (17-40)
-        expected_contents=[(i, f"v{i}") for i in range(1, 41)],
+        mutations=[(f"{i:04d}".encode(), f"v{i}".encode()) for i in range(17, 41)],  # Add 24 more keys (17-40)
+        expected_contents=[(f"{i:04d}".encode(), f"v{i}".encode()) for i in range(1, 41)],
     )
     assert stats['nodes_created'] > 0
 
@@ -149,7 +149,7 @@ def test_separator_invariants_simple():
     tree = ProllyTree(pattern=0.0001, seed=42, store=store, validate=True)
 
     # Insert enough data to create internal nodes
-    data = [(f'key{i:04d}', f'value{i}') for i in range(100)]
+    data = [(f'key{i:04d}'.encode(), f'value{i}'.encode()) for i in range(100)]
     tree.insert_batch(data, verbose=False)
 
     # Validate should catch any separator violations
@@ -165,7 +165,7 @@ def test_separator_invariants_after_mutations():
     tree1 = ProllyTree(pattern=0.0001, seed=42, store=store, validate=True)
 
     # Build initial tree
-    data1 = [(f'key{i:04d}', f'value{i}') for i in range(100)]
+    data1 = [(f'key{i:04d}'.encode(), f'value{i}'.encode()) for i in range(100)]
     tree1.insert_batch(data1, verbose=False)
 
     # Verify invariants
@@ -175,7 +175,7 @@ def test_separator_invariants_after_mutations():
     tree2 = ProllyTree(pattern=0.0001, seed=42, store=store, validate=True)
     tree2.root = tree1.root
 
-    data2 = [(f'key{i:04d}', f'UPDATED{i}') for i in range(0, 100, 10)]
+    data2 = [(f'key{i:04d}'.encode(), f'UPDATED{i}'.encode()) for i in range(0, 100, 10)]
     tree2.insert_batch(data2, verbose=False)
 
     # Verify invariants still hold after mutations
@@ -188,7 +188,7 @@ def test_separator_invariants_large_tree():
     tree = ProllyTree(pattern=0.0001, seed=42, store=store, validate=True)
 
     # Insert enough data to create deep tree with multiple levels
-    data = [(f'key{i:05d}', f'value{i}') for i in range(500)]
+    data = [(f'key{i:05d}'.encode(), f'value{i}'.encode()) for i in range(500)]
     tree.insert_batch(data, verbose=False)
 
     # Verify invariants
