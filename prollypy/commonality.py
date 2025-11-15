@@ -9,7 +9,7 @@ from typing import Set, Dict, Any
 from .store import Store
 
 
-def collect_node_hashes(store: Store, root_hash: str) -> Set[str]:
+def collect_node_hashes(store: Store, root_hash: bytes) -> Set[bytes]:
     """
     Recursively collect all node hashes in a tree.
 
@@ -20,7 +20,7 @@ def collect_node_hashes(store: Store, root_hash: str) -> Set[str]:
     Returns:
         Set of all node hashes in the tree (including root)
     """
-    visited = set()
+    visited: Set[bytes] = set()
     to_visit = [root_hash]
 
     while to_visit:
@@ -35,7 +35,7 @@ def collect_node_hashes(store: Store, root_hash: str) -> Set[str]:
         # Get the node
         node = store.get_node(node_hash)
         if node is None:
-            raise ValueError(f"Node {node_hash} not found in store")
+            raise ValueError(f"Node {node_hash.hex()} not found in store")
 
         # If internal node, add children to visit list
         if not node.is_leaf:
@@ -46,14 +46,14 @@ def collect_node_hashes(store: Store, root_hash: str) -> Set[str]:
     return visited
 
 
-def compute_commonality(store: Store, left_hash: str, right_hash: str) -> Dict[str, Any]:
+def compute_commonality(store: Store, left_hash: bytes, right_hash: bytes) -> Dict[str, Any]:
     """
     Compute commonality between two trees (Venn diagram analysis).
 
     Args:
         store: Storage backend containing both trees
-        left_hash: Root hash of left tree
-        right_hash: Root hash of right tree
+        left_hash: Root hash of left tree (as bytes)
+        right_hash: Root hash of right tree (as bytes)
 
     Returns:
         Dictionary with:

@@ -164,7 +164,7 @@ class DB:
         return total_inserted
 
     def read_rows(self, table_name: str, prefix: str = "",
-                  reconstruct: bool = True) -> Iterator[Tuple[str, Any]]:
+                  reconstruct: bool = True) -> Iterator[Tuple[bytes, Any]]:
         """
         Read rows from a table.
 
@@ -174,7 +174,7 @@ class DB:
             reconstruct: If True, return dicts; if False, return raw arrays
 
         Yields:
-            Tuples of (key, row_data) where row_data is dict if reconstruct=True, else list
+            Tuples of (key, row_data) where key is bytes and row_data is dict if reconstruct=True, else list
         """
         table = self.get_table(table_name) if reconstruct else None
         data_prefix = f"/d/{table_name}/{prefix}".encode('utf-8')

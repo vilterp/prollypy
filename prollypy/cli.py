@@ -223,8 +223,12 @@ def commonality_analysis(left_hash: str, right_hash: str, store_spec: str = 'cac
     print(f"Opening store: {store_spec}")
     store = create_store_from_spec(store_spec, cache_size=cache_size)
 
+    # Convert hex strings to bytes
+    left_hash_bytes = bytes.fromhex(left_hash)
+    right_hash_bytes = bytes.fromhex(right_hash)
+
     # Compute commonality
-    stats = compute_commonality(store, left_hash, right_hash)
+    stats = compute_commonality(store, left_hash_bytes, right_hash_bytes)
 
     # Print report
     print_commonality_report(left_hash, right_hash, stats)
@@ -333,7 +337,8 @@ def gc_command(root_hashes: List[str], store_spec: str = 'cached-file://.prolly'
 
     # Run garbage collection
     print("Analyzing store...")
-    root_set = set(root_hashes)
+    # Convert hex strings to bytes
+    root_set = {bytes.fromhex(h) for h in root_hashes}
     stats = garbage_collect(store, root_set, dry_run=dry_run)
 
     print()
