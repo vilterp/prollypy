@@ -7,7 +7,7 @@ A Node represents either a leaf or internal node in the tree structure.
 from typing import Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .store import Store
+    from .store import BlockStore
 
 
 class Node:
@@ -73,7 +73,7 @@ class Node:
         else:
             return f"Internal(keys={self.keys}, children={len(self.values)})"
 
-    def validate(self, store: Optional['Store'] = None, context: str = ""):
+    def validate(self, store: Optional['BlockStore'] = None, context: str = ""):
         """
         Validate this node and its entire subtree.
 
@@ -134,7 +134,7 @@ class Node:
                     raise ValueError("\n".join(error_msg))
             prev_key = key
 
-    def _validate_separators(self, store: 'Store', context_str: str):
+    def _validate_separators(self, store: 'BlockStore', context_str: str):
         """
         Validate separator invariants for internal nodes.
 
@@ -164,7 +164,7 @@ class Node:
                     f"  Child index: {child_idx}"
                 )
 
-    def _get_first_key(self, node: 'Node', store: 'Store') -> Optional[bytes]:
+    def _get_first_key(self, node: 'Node', store: 'BlockStore') -> Optional[bytes]:
         """Get the first key in a node's subtree."""
         if node.is_leaf:
             return node.keys[0] if len(node.keys) > 0 else None
@@ -179,7 +179,7 @@ class Node:
                 return None
             return self._get_first_key(child, store)
 
-    def _collect_keys(self, result: list[bytes], store: Optional['Store']):
+    def _collect_keys(self, result: list[bytes], store: Optional['BlockStore']):
         """Recursively collect all keys from this node's subtree in traversal order."""
         if self.is_leaf:
             # For leaf nodes, just add all keys

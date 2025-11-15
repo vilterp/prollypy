@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 
 from prollypy.db import DB
-from prollypy.store import MemoryStore, create_store_from_spec
+from prollypy.store import MemoryBlockStore, create_store_from_spec
 
 
 @pytest.fixture
@@ -80,7 +80,7 @@ def imported_db(temp_sqlite_db):
     """Import the SQLite database and return DB instance."""
     from prollypy.cli import import_sqlite_database
 
-    store = MemoryStore()
+    store = MemoryBlockStore()
     db = DB(store=store, pattern=0.0001, seed=42)
 
     # Import the database
@@ -235,7 +235,7 @@ def test_import_root_hash(imported_db):
 def test_import_deterministic(temp_sqlite_db):
     """Test that importing the same database twice produces the same root hash."""
     # Import first time
-    store1 = MemoryStore()
+    store1 = MemoryBlockStore()
     db1 = DB(store=store1, pattern=0.0001, seed=42)
 
     sqlite_conn1 = sqlite3.connect(temp_sqlite_db)
@@ -251,7 +251,7 @@ def test_import_deterministic(temp_sqlite_db):
     hash1 = db1.get_root_hash()
 
     # Import second time
-    store2 = MemoryStore()
+    store2 = MemoryBlockStore()
     db2 = DB(store=store2, pattern=0.0001, seed=42)
 
     sqlite_conn2 = sqlite3.connect(temp_sqlite_db)
@@ -279,7 +279,7 @@ def test_import_empty_table(temp_sqlite_db):
     conn.close()
 
     # Import
-    store = MemoryStore()
+    store = MemoryBlockStore()
     db = DB(store=store, pattern=0.0001, seed=42)
 
     sqlite_conn = sqlite3.connect(temp_sqlite_db)
@@ -306,7 +306,7 @@ def test_import_with_null_values(temp_sqlite_db):
     conn.close()
 
     # Import
-    store = MemoryStore()
+    store = MemoryBlockStore()
     db = DB(store=store, pattern=0.0001, seed=42)
 
     sqlite_conn = sqlite3.connect(temp_sqlite_db)
@@ -339,7 +339,7 @@ def test_import_large_batch(temp_sqlite_db):
     conn.close()
 
     # Import with small batch size
-    store = MemoryStore()
+    store = MemoryBlockStore()
     db = DB(store=store, pattern=0.0001, seed=42)
 
     sqlite_conn = sqlite3.connect(temp_sqlite_db)
@@ -356,7 +356,7 @@ def test_full_import_workflow(temp_sqlite_db):
     """Test complete import workflow from SQLite to ProllyTree to verification."""
     from prollypy.cli import import_sqlite_database
 
-    store = MemoryStore()
+    store = MemoryBlockStore()
 
     # Use import_sqlite_database function to import entire database
     sqlite_conn = sqlite3.connect(temp_sqlite_db)

@@ -6,10 +6,10 @@ and which are shared between them.
 """
 
 from typing import Set, Dict, Any
-from .store import Store
+from .store import BlockStore
 
 
-def collect_node_hashes(store: Store, root_hash: bytes) -> Set[bytes]:
+def collect_node_hashes(store: BlockStore, root_hash: bytes) -> Set[bytes]:
     """
     Recursively collect all node hashes in a tree.
 
@@ -46,7 +46,7 @@ def collect_node_hashes(store: Store, root_hash: bytes) -> Set[bytes]:
     return visited
 
 
-def compute_commonality(store: Store, left_hash: bytes, right_hash: bytes) -> Dict[str, Any]:
+def compute_commonality(store: BlockStore, left_hash: bytes, right_hash: bytes) -> Dict[str, Any]:
     """
     Compute commonality between two trees (Venn diagram analysis).
 

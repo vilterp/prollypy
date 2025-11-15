@@ -10,7 +10,7 @@ import time
 from typing import Optional, List
 
 from .db import DB
-from .store import create_store_from_spec, CachedFSStore
+from .store import create_store_from_spec, CachedFSBlockStore
 from .diff import Differ, Added, Deleted, Modified
 from .sqlite_import import import_sqlite_database, import_sqlite_table, validate_tree_sorted
 from .commonality import compute_commonality, print_commonality_report
@@ -152,7 +152,7 @@ def diff_trees(old_hash: str, new_hash: str,
     print(f"  Nodes compared:                      {diff_stats.nodes_compared:,}")
 
     # Show cache stats if using cached store
-    if isinstance(store, CachedFSStore):
+    if isinstance(store, CachedFSBlockStore):
         print("\n" + "="*80)
         print("CACHE STATISTICS")
         print("="*80)
@@ -359,7 +359,7 @@ def gc_command(root_hashes: List[str], store_spec: str = 'cached-file://.prolly'
         print(f"SUCCESS: Removed {stats.garbage_nodes:,} garbage nodes from store.")
 
     # Show cache statistics if available
-    if isinstance(store, CachedFSStore):
+    if isinstance(store, CachedFSBlockStore):
         print()
         print(f"{'='*80}")
         print(f"CACHE STATISTICS")

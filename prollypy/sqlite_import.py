@@ -9,7 +9,7 @@ import time
 from typing import Optional, List
 
 from .db import DB
-from .store import Store, CachedFSStore
+from .store import BlockStore, CachedFSBlockStore
 from .cursor import TreeCursor
 
 
@@ -175,7 +175,7 @@ def import_sqlite_table(db: DB, sqlite_conn: sqlite3.Connection, table_name: str
 
     # Show cache stats if available
     store = db.get_store()
-    if isinstance(store, CachedFSStore):
+    if isinstance(store, CachedFSBlockStore):
         creation_stats = store.get_creation_stats()
         cache_stats = store.get_cache_stats()
         print(f"  Cumulative: {creation_stats['total_leaves_created']:,} leaves, "
@@ -191,7 +191,7 @@ def import_sqlite_table(db: DB, sqlite_conn: sqlite3.Connection, table_name: str
     return rows_processed
 
 
-def import_sqlite_database(db_path: str, store: Store,
+def import_sqlite_database(db_path: str, store: BlockStore,
                            pattern: float = 0.0001, seed: int = 42,
                            batch_size: int = 1000,
                            tables_filter: Optional[List[str]] = None,
@@ -202,7 +202,7 @@ def import_sqlite_database(db_path: str, store: Store,
 
     Args:
         db_path: Path to SQLite database
-        store: Store instance to use
+        store: BlockStore instance to use
         pattern: ProllyTree split pattern
         seed: Random seed
         batch_size: Batch size for inserts
@@ -234,7 +234,7 @@ def import_sqlite_database(db_path: str, store: Store,
 
     # Create DB
     print(f"\nInitializing ProllyTree (pattern={pattern}, seed={seed})")
-    if isinstance(store, CachedFSStore):
+    if isinstance(store, CachedFSBlockStore):
         cache_stats = store.get_cache_stats()
         print(f"  Cache size: {cache_stats['max_cache_size']}")
 
@@ -276,7 +276,7 @@ def import_sqlite_database(db_path: str, store: Store,
     print(f"  Store type: {type(store).__name__}")
     print(f"  Total nodes in storage: {store.count_nodes():,}")
 
-    if isinstance(store, CachedFSStore):
+    if isinstance(store, CachedFSBlockStore):
         stats = store.get_cache_stats()
         print(f"\nCache statistics:")
         for key, value in stats.items():

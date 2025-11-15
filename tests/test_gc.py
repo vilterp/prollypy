@@ -4,7 +4,7 @@ Tests for garbage collection.
 
 import pytest
 from prollypy.tree import ProllyTree
-from prollypy.store import MemoryStore
+from prollypy.store import MemoryBlockStore
 from prollypy.store_gc import (
     find_reachable_nodes,
     find_garbage_nodes,
@@ -17,7 +17,7 @@ from prollypy.store_gc import (
 @pytest.fixture
 def store():
     """Create a memory store for testing."""
-    return MemoryStore()
+    return MemoryBlockStore()
 
 
 def test_single_tree_no_garbage(store):

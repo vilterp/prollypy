@@ -7,7 +7,7 @@ based on content hashes.
 
 from dataclasses import dataclass
 from typing import Iterator, Union, Optional
-from .store import Store
+from .store import BlockStore
 from .cursor import TreeCursor
 
 
@@ -60,7 +60,7 @@ class Differ:
     Diff two ProllyTree structures with statistics tracking.
     """
 
-    def __init__(self, store: Store):
+    def __init__(self, store: BlockStore):
         """
         Initialize differ with store.
 
@@ -461,7 +461,7 @@ class Differ:
 
 
 # Backward compatibility function
-def diff(store: Store, old_hash: bytes, new_hash: bytes, prefix: Optional[bytes] = None) -> Iterator[DiffEvent]:
+def diff(store: BlockStore, old_hash: bytes, new_hash: bytes, prefix: Optional[bytes] = None) -> Iterator[DiffEvent]:
     """
     Compute differences between two trees (backward compatibility wrapper).
 

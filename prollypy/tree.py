@@ -5,18 +5,18 @@ Features:
 - Content-addressed nodes (hash of contents)
 - Rolling hash-based splitting (Rabin fingerprinting)
 - Incremental batch insert with subtree reuse
-- Pluggable storage backends via Store protocol
+- Pluggable storage backends via BlockStore protocol
 """
 
 import hashlib
 from typing import Optional, Iterator
 from .node import Node
-from .store import Store, MemoryStore, CachedFSStore
+from .store import BlockStore, MemoryBlockStore, CachedFSBlockStore
 from .cursor import TreeCursor
 
 
 class ProllyTree:
-    def __init__(self, pattern=0.25, seed=42, store: Optional[Store] = None, validate=False):
+    def __init__(self, pattern=0.25, seed=42, store: Optional[BlockStore] = None, validate=False):
         """
         Initialize ProllyTree with content-based splitting.
 
@@ -24,12 +24,12 @@ class ProllyTree:
             pattern: Split probability (0.0 to 1.0). Lower = larger nodes.
                     Default 0.25 means ~4 entries per node on average.
             seed: Seed for rolling hash function for reproducibility
-            store: Storage backend (defaults to MemoryStore if not provided)
+            store: Storage backend (defaults to MemoryBlockStore if not provided)
             validate: If True, validate node structure during tree building (slower)
         """
         self.pattern = int(pattern * (2**32))  # Convert to uint32 threshold
         self.seed = seed
-        self.store = store if store is not None else MemoryStore()
+        self.store = store if store is not None else MemoryBlockStore()
         self.validate = validate
 
         self.root = Node(is_leaf=True)
@@ -120,9 +120,9 @@ class ProllyTree:
         # Reset stats for this batch
         self.reset_stats()
 
-        # Track cache stats before this batch (if using CachedFSStore)
+        # Track cache stats before this batch (if using CachedFSBlockStore)
         cache_stats_before = None
-        if isinstance(self.store, CachedFSStore):
+        if isinstance(self.store, CachedFSBlockStore):
             cache_stats_before = {
                 'hits': self.store.cache_hits,
                 'misses': self.store.cache_misses
@@ -164,14 +164,14 @@ class ProllyTree:
             summary_parts.append(f"{stats['nodes_created']} new nodes created")
             summary_parts.append(f"{rows_per_sec:,.0f} rows/sec")
 
-            # Add cache stats if using CachedFSStore
-            if isinstance(self.store, CachedFSStore) and cache_stats_before:
+            # Add cache stats if using CachedFSBlockStore
+            if isinstance(self.store, CachedFSBlockStore) and cache_stats_before:
                 hits_delta = self.store.cache_hits - cache_stats_before['hits']
                 misses_delta = self.store.cache_misses - cache_stats_before['misses']
                 summary_parts.append(f"{hits_delta} cache hits")
                 summary_parts.append(f"{misses_delta} cache misses")
 
-                # Add average node sizes from CachedFSStore
+                # Add average node sizes from CachedFSBlockStore
                 size_stats = self.store.get_size_stats()
                 if size_stats['avg_leaf_size'] > 0:
                     summary_parts.append(f"avg leaf: {size_stats['avg_leaf_size']:.0f}B")

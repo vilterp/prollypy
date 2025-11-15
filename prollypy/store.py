@@ -1,9 +1,9 @@
 """
 Storage backends for ProllyTree nodes.
 
-Provides a Store protocol and multiple implementations:
-- MemoryStore: In-memory storage using a dictionary
-- FileSystemStore: Persistent storage using the filesystem
+Provides a BlockStore protocol and multiple implementations:
+- MemoryBlockStore: In-memory storage using a dictionary
+- FileSystemBlockStore: Persistent storage using the filesystem
 """
 
 from typing import Protocol, Optional, Iterator
@@ -14,7 +14,7 @@ from .stats import Stats
 from .node import Node
 
 
-class Store(Protocol):
+class BlockStore(Protocol):
     """Protocol for node storage backends."""
 
     def put_node(self, node_hash: bytes, node: Node):
@@ -38,7 +38,7 @@ class Store(Protocol):
         ...
 
 
-class MemoryStore:
+class MemoryBlockStore:
     """In-memory node storage using a dictionary."""
 
     def __init__(self):
@@ -68,7 +68,7 @@ class MemoryStore:
         return len(self.nodes)
 
 
-class FileSystemStore:
+class FileSystemBlockStore:
     """File system-based node storage."""
 
     def __init__(self, base_path: str):
@@ -158,7 +158,7 @@ class FileSystemStore:
         return self.stats.get_size_stats()
 
 
-class CachedFSStore:
+class CachedFSBlockStore:
     """Filesystem storage with LRU cache for frequently accessed nodes."""
 
     def __init__(self, base_path: str, cache_size: int = 1000):
@@ -169,7 +169,7 @@ class CachedFSStore:
             base_path: Directory to store nodes in
             cache_size: Maximum number of nodes to keep in memory cache
         """
-        self.fs_store = FileSystemStore(base_path)
+        self.fs_store = FileSystemBlockStore(base_path)
         self.cache_size = cache_size
         self.cache: OrderedDict[bytes, Node] = OrderedDict()  # LRU cache using OrderedDict
 
@@ -275,9 +275,9 @@ class CachedFSStore:
         self.fs_store.stats.print_distributions(bucket_count)
 
 
-def create_store_from_spec(spec: str, cache_size: Optional[int] = None) -> Store:
+def create_store_from_spec(spec: str, cache_size: Optional[int] = None) -> BlockStore:
     """
-    Create a store from a specification string.
+    Create a block store from a specification string.
 
     Args:
         spec: Store specification, one of:
@@ -288,18 +288,18 @@ def create_store_from_spec(spec: str, cache_size: Optional[int] = None) -> Store
         cache_size: Cache size for cached stores (default: 1000)
 
     Returns:
-        Store instance
+        BlockStore instance
     """
     if spec == ':memory:':
-        return MemoryStore()
+        return MemoryBlockStore()
     elif spec.startswith('cached-file://'):
         # Remove 'cached-file://' prefix
         path = spec[14:]
-        return CachedFSStore(path, cache_size=cache_size or 1000)
+        return CachedFSBlockStore(path, cache_size=cache_size or 1000)
     elif spec.startswith('file://'):
         # Remove 'file://' prefix
         path = spec[7:]
-        return FileSystemStore(path)
+        return FileSystemBlockStore(path)
     elif spec.startswith('s3://'):
         raise NotImplementedError("S3 storage not yet implemented")
     else:

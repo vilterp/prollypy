@@ -5,14 +5,14 @@ Tests for diff algorithm.
 import pytest
 
 from prollypy.tree import ProllyTree
-from prollypy.store import MemoryStore
+from prollypy.store import MemoryBlockStore
 from prollypy.diff import diff, Differ, Added, Deleted, Modified
 
 
 @pytest.fixture
 def store():
-    """Create a shared MemoryStore for testing."""
-    return MemoryStore()
+    """Create a shared MemoryBlockStore for testing."""
+    return MemoryBlockStore()
 
 
 def test_diff_identical_trees(store):

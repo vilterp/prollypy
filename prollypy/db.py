@@ -7,7 +7,7 @@ Provides a high-level database interface on top of the ProllyTree key-value stor
 import json
 from typing import List, Dict, Any, Optional, Iterator, Tuple
 from .tree import ProllyTree
-from .store import Store, create_store_from_spec
+from .store import BlockStore, create_store_from_spec
 
 
 class Table:
@@ -47,9 +47,9 @@ class DB:
     - Table data at /d/<table_name>/<primary_key>
     """
 
-    def __init__(self, store: Store, pattern: float = 0.0001, seed: int = 42, validate: bool = False):
+    def __init__(self, store: BlockStore, pattern: float = 0.0001, seed: int = 42, validate: bool = False):
         """
-        Initialize database with a Store instance.
+        Initialize database with a BlockStore instance.
 
         Args:
             store: Storage backend instance
@@ -199,12 +199,12 @@ class DB:
         """
         return self.tree._hash_node(self.tree.root)
 
-    def get_store(self) -> Store:
+    def get_store(self) -> BlockStore:
         """
         Get the underlying store.
 
         Returns:
-            Store instance
+            BlockStore instance
         """
         return self.tree.store
 

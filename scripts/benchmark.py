@@ -14,7 +14,7 @@ import time
 from typing import List, Tuple
 
 from prollypy.tree import ProllyTree
-from prollypy.store import MemoryStore, FileSystemStore, CachedFSStore
+from prollypy.store import MemoryBlockStore, FileSystemBlockStore, CachedFSBlockStore
 
 
 def generate_random_kv_pairs(count: int, key_length: int = 20, value_length: int = 50, seed: int = None) -> List[Tuple[str, str]]:
@@ -79,11 +79,11 @@ def benchmark_insertion(
     """
     # Create storage backend
     if store_type == "memory":
-        store = MemoryStore()
+        store = MemoryBlockStore()
     elif store_type == "filesystem":
-        store = FileSystemStore(base_path=base_path)
+        store = FileSystemBlockStore(base_path=base_path)
     elif store_type == "cached":
-        store = CachedFSStore(base_path=base_path, cache_size=1000)
+        store = CachedFSBlockStore(base_path=base_path, cache_size=1000)
     else:
         raise ValueError(f"Unknown store type: {store_type}")
 
@@ -170,9 +170,9 @@ def benchmark_insertion(
         print("\n" + "=" * 70)
         print("NODE SIZE HISTOGRAMS")
         print("=" * 70)
-        if isinstance(store, CachedFSStore):
+        if isinstance(store, CachedFSBlockStore):
             store.print_distributions(bucket_count=15)
-        elif isinstance(store, FileSystemStore):
+        elif isinstance(store, FileSystemBlockStore):
             store.stats.print_distributions(bucket_count=15)
 
     # Print tree structure if requested

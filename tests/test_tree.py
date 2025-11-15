@@ -4,7 +4,7 @@ Tests for ProllyTree implementation.
 
 import pytest
 from prollypy.tree import ProllyTree
-from prollypy.store import MemoryStore
+from prollypy.store import MemoryBlockStore
 
 
 @pytest.fixture
@@ -26,9 +26,9 @@ def _do_insert(old_tree, mutations, expected_contents, verbose=False):
     Returns:
         (new_tree, stats): New ProllyTree instance and operation statistics
     """
-    # Capture existing node hashes before insert (if using MemoryStore)
+    # Capture existing node hashes before insert (if using MemoryBlockStore)
     old_node_hashes = set()
-    if isinstance(old_tree.store, MemoryStore):
+    if isinstance(old_tree.store, MemoryBlockStore):
         old_node_hashes = set(old_tree.store.nodes.keys())
 
     if verbose:
@@ -145,7 +145,7 @@ def test_large_insert_multiple_splits(empty_tree):
 
 def test_separator_invariants_simple():
     """Test that separator invariants hold for a simple tree."""
-    store = MemoryStore()
+    store = MemoryBlockStore()
     tree = ProllyTree(pattern=0.0001, seed=42, store=store, validate=True)
 
     # Insert enough data to create internal nodes
@@ -161,7 +161,7 @@ def test_separator_invariants_simple():
 
 def test_separator_invariants_after_mutations():
     """Test that separator invariants hold after mutations."""
-    store = MemoryStore()
+    store = MemoryBlockStore()
     tree1 = ProllyTree(pattern=0.0001, seed=42, store=store, validate=True)
 
     # Build initial tree
@@ -184,7 +184,7 @@ def test_separator_invariants_after_mutations():
 
 def test_separator_invariants_large_tree():
     """Test separator invariants on a larger tree."""
-    store = MemoryStore()
+    store = MemoryBlockStore()
     tree = ProllyTree(pattern=0.0001, seed=42, store=store, validate=True)
 
     # Insert enough data to create deep tree with multiple levels

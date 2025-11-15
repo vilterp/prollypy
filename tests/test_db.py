@@ -8,13 +8,13 @@ import tempfile
 import shutil
 
 from prollypy.db import DB, Table
-from prollypy.store import MemoryStore, FileSystemStore, CachedFSStore
+from prollypy.store import MemoryBlockStore, FileSystemBlockStore, CachedFSBlockStore
 
 
 @pytest.fixture
 def db():
     """Create a DB instance with in-memory storage."""
-    store = MemoryStore()
+    store = MemoryBlockStore()
     return DB(store=store, pattern=0.0001, seed=42)
 
 
@@ -192,7 +192,7 @@ def test_get_root_hash(db_with_table):
 def test_get_store(db):
     """Test getting the underlying store."""
     store = db.get_store()
-    assert isinstance(store, MemoryStore)
+    assert isinstance(store, MemoryBlockStore)
 
 
 def test_insert_rows_invalid_table(db):
@@ -219,7 +219,7 @@ def test_filesystem_persistence(db_with_table):
     """Test that DB works with filesystem storage."""
     temp_dir = tempfile.mkdtemp()
     try:
-        fs_store = FileSystemStore(temp_dir)
+        fs_store = FileSystemBlockStore(temp_dir)
         db = DB(store=fs_store, pattern=0.0001, seed=42)
 
         # Create table and insert data
@@ -241,7 +241,7 @@ def test_cached_store(db_with_table):
     """Test that DB works with cached filesystem storage."""
     temp_dir = tempfile.mkdtemp()
     try:
-        cached_store = CachedFSStore(temp_dir, cache_size=10)
+        cached_store = CachedFSBlockStore(temp_dir, cache_size=10)
         db = DB(store=cached_store, pattern=0.0001, seed=42)
 
         # Create table and insert data

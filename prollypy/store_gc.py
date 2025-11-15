@@ -7,7 +7,7 @@ and comparing with all stored nodes.
 
 from typing import Set, Iterator
 from dataclasses import dataclass
-from .store import Store
+from .store import BlockStore
 
 
 @dataclass
@@ -39,7 +39,7 @@ class GCStats:
         )
 
 
-def find_reachable_nodes(store: Store, root_hashes: Set[bytes]) -> Set[bytes]:
+def find_reachable_nodes(store: BlockStore, root_hashes: Set[bytes]) -> Set[bytes]:
     """
     Find all nodes reachable from a set of root hashes.
 
@@ -81,7 +81,7 @@ def find_reachable_nodes(store: Store, root_hashes: Set[bytes]) -> Set[bytes]:
     return reachable
 
 
-def iter_all_nodes(store: Store) -> Iterator[bytes]:
+def iter_all_nodes(store: BlockStore) -> Iterator[bytes]:
     """
     Iterate over all node hashes in the store.
 
@@ -94,7 +94,7 @@ def iter_all_nodes(store: Store) -> Iterator[bytes]:
     yield from store.list_nodes()
 
 
-def find_garbage_nodes(store: Store, root_hashes: Set[bytes]) -> Set[bytes]:
+def find_garbage_nodes(store: BlockStore, root_hashes: Set[bytes]) -> Set[bytes]:
     """
     Find all garbage (unreachable) nodes in the store.
 
@@ -117,7 +117,7 @@ def find_garbage_nodes(store: Store, root_hashes: Set[bytes]) -> Set[bytes]:
     return garbage
 
 
-def collect_garbage_stats(store: Store, root_hashes: Set[bytes]) -> GCStats:
+def collect_garbage_stats(store: BlockStore, root_hashes: Set[bytes]) -> GCStats:
     """
     Compute garbage collection statistics without removing anything.
 
@@ -142,7 +142,7 @@ def collect_garbage_stats(store: Store, root_hashes: Set[bytes]) -> GCStats:
     return stats
 
 
-def remove_garbage(store: Store, garbage_hashes: Set[bytes]) -> int:
+def remove_garbage(store: BlockStore, garbage_hashes: Set[bytes]) -> int:
     """
     Remove garbage nodes from the store.
 
@@ -165,7 +165,7 @@ def remove_garbage(store: Store, garbage_hashes: Set[bytes]) -> int:
     return removed_count
 
 
-def garbage_collect(store: Store, root_hashes: Set[bytes], dry_run: bool = True) -> GCStats:
+def garbage_collect(store: BlockStore, root_hashes: Set[bytes], dry_run: bool = True) -> GCStats:
     """
     Perform garbage collection on a store.
 
