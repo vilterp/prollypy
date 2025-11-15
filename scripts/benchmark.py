@@ -56,7 +56,7 @@ def benchmark_insertion(
     batch_size: int = 1000,
     print_tree: bool = False,
     print_histograms: bool = True,
-    sort_globally: bool = True
+    sort_globally: bool = False
 ) -> dict:
     """Run insertion benchmark and return statistics.
 
@@ -72,7 +72,7 @@ def benchmark_insertion(
         batch_size: Number of rows to insert per batch
         print_tree: Whether to print tree structure at end
         print_histograms: Whether to print node size histograms
-        sort_globally: If True, sort all keys globally; if False, sort only within batches
+        sort_globally: If True, sort all keys globally; if False (default), sort only within batches
 
     Returns:
         Dictionary containing benchmark results and statistics
@@ -299,9 +299,9 @@ def main():
         help="Number of rows to insert per batch (default: 1000)"
     )
     parser.add_argument(
-        "--sort-batches-only",
+        "--sort-globally",
         action="store_true",
-        help="Sort keys within each batch only (not globally). Batches may have interleaved keys."
+        help="Sort all keys globally before batching (default: sort within each batch only)"
     )
     parser.add_argument(
         "--print-tree",
@@ -352,7 +352,7 @@ def main():
                 batch_size=args.batch_size,
                 print_tree=False,  # Don't print tree in comparison mode
                 print_histograms=False,  # Don't print histograms in comparison mode
-                sort_globally=not args.sort_batches_only
+                sort_globally=args.sort_globally
             )
             all_results.append(results)
 
@@ -385,7 +385,7 @@ def main():
             batch_size=args.batch_size,
             print_tree=args.print_tree,
             print_histograms=not args.no_histograms,
-            sort_globally=not args.sort_batches_only
+            sort_globally=args.sort_globally
         )
         print_results(results)
 
