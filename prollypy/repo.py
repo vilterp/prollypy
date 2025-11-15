@@ -9,8 +9,9 @@ import time
 import hashlib
 import json
 import sqlite3
+import heapq
 from dataclasses import dataclass
-from typing import Protocol, Optional, List, Dict, Tuple, Iterator
+from typing import Protocol, Optional, List, Dict, Tuple, Iterator, Set
 from .store import BlockStore
 
 
@@ -498,9 +499,64 @@ class Repo:
 
         return None
 
+    def walk(self, frontier: Set[bytes]) -> Iterator[Tuple[bytes, Commit]]:
+        """
+        Walk the commit graph starting from a frontier set, yielding commits
+        in reverse chronological order (most recent first).
+
+        This method uses a priority queue to ensure commits are yielded in
+        timestamp order (newest first), which is important for garbage collection
+        and other operations that need to traverse the commit graph in a specific order.
+
+        Args:
+            frontier: Set of commit hashes to start walking from
+
+        Yields:
+            Tuples of (commit_hash, commit) in reverse chronological order
+        """
+        # Priority queue: (negative_timestamp, commit_hash)
+        # We use negative timestamp because heapq is a min-heap
+        # and we want the most recent (highest timestamp) first
+        heap: List[Tuple[float, bytes]] = []
+        visited: Set[bytes] = set()
+
+        # Initialize heap with frontier commits
+        for commit_hash in frontier:
+            commit = self.commit_graph_store.get_commit(commit_hash)
+            if commit is not None:
+                # Use negative timestamp for max-heap behavior
+                heapq.heappush(heap, (-commit.timestamp, commit_hash))
+
+        # Process commits in timestamp order
+        while heap:
+            neg_timestamp, commit_hash = heapq.heappop(heap)
+
+            # Skip if already visited
+            if commit_hash in visited:
+                continue
+
+            visited.add(commit_hash)
+
+            # Get the commit
+            commit = self.commit_graph_store.get_commit(commit_hash)
+            if commit is None:
+                continue
+
+            yield (commit_hash, commit)
+
+            # Add parents to the heap
+            for parent_hash in commit.parents:
+                if parent_hash not in visited:
+                    parent_commit = self.commit_graph_store.get_commit(parent_hash)
+                    if parent_commit is not None:
+                        heapq.heappush(heap, (-parent_commit.timestamp, parent_hash))
+
     def log(self, start_ref: Optional[str] = None, max_count: Optional[int] = None) -> Iterator[Tuple[bytes, Commit]]:
         """
         Walk the commit graph backwards from a starting point, yielding commits.
+
+        This is implemented in terms of walk() by starting with a frontier of {HEAD}
+        or the specified ref.
 
         Args:
             start_ref: Ref or commit hash to start from. If None, uses HEAD.
@@ -520,32 +576,38 @@ class Repo:
             if current_hash is None:
                 return
 
-        # Walk backwards through commit history
-        visited = set()
+        # Create frontier with just the starting commit
+        frontier = {current_hash}
+
+        # Walk and yield commits, respecting max_count
         count = 0
-
-        # Use a queue for BFS (though linear history will be simple)
-        queue = [current_hash]
-
-        while queue:
+        for commit_hash, commit in self.walk(frontier):
             if max_count is not None and count >= max_count:
                 break
-
-            commit_hash = queue.pop(0)
-
-            # Skip if already visited
-            if commit_hash in visited:
-                continue
-
-            visited.add(commit_hash)
-
-            # Get the commit
-            commit = self.commit_graph_store.get_commit(commit_hash)
-            if commit is None:
-                continue
-
             yield (commit_hash, commit)
             count += 1
 
-            # Add parents to queue
-            queue.extend(commit.parents)
+    def get_reachable_tree_roots(self) -> Set[bytes]:
+        """
+        Get all tree roots that are reachable from any ref.
+
+        This walks the commit graph starting from all refs and collects
+        all tree roots. This is useful for garbage collection to identify
+        which prolly tree nodes should be kept.
+
+        Returns:
+            Set of tree root hashes (as bytes) that are reachable
+        """
+        # Get all refs as the frontier
+        refs = self.commit_graph_store.list_refs()
+        if not refs:
+            return set()
+
+        frontier = set(refs.values())
+
+        # Walk through all commits and collect tree roots
+        tree_roots: Set[bytes] = set()
+        for commit_hash, commit in self.walk(frontier):
+            tree_roots.add(commit.tree_root)
+
+        return tree_roots

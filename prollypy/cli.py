@@ -113,38 +113,101 @@ def log_commits(prolly_dir: str = '.prolly', ref: Optional[str] = None, max_coun
         print("No commits found")
 
 
-def dump_database(root_hash: str, store_spec: str = 'cached-file://.prolly',
-                  cache_size: Optional[int] = None,
-                  prefix: Optional[str] = None):
+def import_sqlite_to_repo(db_path: str, prolly_dir: str = '.prolly',
+                          pattern: float = 0.0001, seed: int = 42,
+                          batch_size: int = 1000, tables_filter: Optional[List[str]] = None,
+                          verbose_batches: bool = False, validate: bool = False,
+                          message: Optional[str] = None):
     """
-    Dump keys from the database.
+    Import SQLite database into repo and create a commit.
 
     Args:
-        root_hash: Root hash to load
-        store_spec: Store specification
-        cache_size: Cache size for cached stores
+        db_path: Path to SQLite database
+        prolly_dir: Path to .prolly directory
+        pattern: ProllyTree split pattern
+        seed: Random seed
+        batch_size: Batch size for inserts
+        tables_filter: Optional list of table names to import
+        verbose_batches: Show detailed batch statistics
+        validate: Validate tree is sorted after each table import
+        message: Commit message (default: auto-generated)
+    """
+    repo = _get_repo(prolly_dir)
+
+    # Import the database
+    db = import_sqlite_database(
+        db_path=db_path,
+        store=repo.block_store,
+        pattern=pattern,
+        seed=seed,
+        batch_size=batch_size,
+        tables_filter=tables_filter,
+        verbose_batches=verbose_batches,
+        validate=validate
+    )
+
+    # Get the root hash
+    root_hash = db.get_root_hash()
+
+    # Create commit message
+    if message is None:
+        db_name = os.path.basename(db_path)
+        if tables_filter:
+            message = f"Import tables {', '.join(tables_filter)} from {db_name}"
+        else:
+            message = f"Import from {db_name}"
+
+    # Create commit
+    commit = repo.commit(root_hash, message)
+
+    print(f"\nCommit created: {commit.compute_hash().hex()[:8]}")
+    print(f"Message: {message}")
+    print(f"Root hash: {root_hash.hex()}")
+
+    head_commit, ref = repo.get_head()
+    print(f"Updated {ref} to {commit.compute_hash().hex()[:8]}")
+
+
+def dump_from_repo(ref: Optional[str] = None, prolly_dir: str = '.prolly',
+                   prefix: Optional[str] = None):
+    """
+    Dump keys from a ref or HEAD.
+
+    Args:
+        ref: Ref name or commit hash (default: HEAD)
+        prolly_dir: Repository directory
         prefix: Optional key prefix to dump (default: dump all)
     """
+    repo = _get_repo(prolly_dir)
 
-    print(f"Opening store: {store_spec}")
-    store = create_store_from_spec(store_spec, cache_size=cache_size)
+    # Resolve ref
+    if ref is None:
+        head_commit, ref_name = repo.get_head()
+        if head_commit is None:
+            print("Error: No commits in repository")
+            return
+        root_hash_bytes = head_commit.tree_root
+        print(f"Dumping from HEAD ({ref_name})")
+    else:
+        commit_hash = repo.resolve_ref(ref)
+        if commit_hash is None:
+            print(f"Error: Ref '{ref}' not found")
+            return
+        commit = repo.get_commit(commit_hash)
+        if commit is None:
+            print(f"Error: Commit not found")
+            return
+        root_hash_bytes = commit.tree_root
+        print(f"Dumping from ref '{ref}'")
 
-    # Count nodes
-    node_count = store.count_nodes()
-    print(f"Store contains {node_count:,} total nodes")
-
-    if node_count == 0:
-        print("Store is empty")
-        return
+    print(f"Tree root hash: {root_hash_bytes.hex()}")
 
     # Create tree
-    tree = ProllyTree(pattern=0.0001, seed=42, store=store)
+    tree = ProllyTree(pattern=0.0001, seed=42, store=repo.block_store)
 
-    print(f"Loading tree from root hash: {root_hash}")
-    root_hash_bytes = bytes.fromhex(root_hash)
-    root_node = store.get_node(root_hash_bytes)
+    root_node = repo.block_store.get_node(root_hash_bytes)
     if not root_node:
-        print(f"Error: Root hash {root_hash} not found in store")
+        print(f"Error: Root node not found in store")
         return
     tree.root = root_node
 
@@ -160,6 +223,118 @@ def dump_database(root_hash: str, store_spec: str = 'cached-file://.prolly',
         count += 1
 
     print(f"\nTotal: {count:,} keys found")
+
+
+def diff_refs(old_ref: str, new_ref: Optional[str] = None,
+              prolly_dir: str = '.prolly',
+              limit: Optional[int] = None,
+              prefix: Optional[str] = None):
+    """
+    Diff two refs or commits.
+
+    Args:
+        old_ref: First ref/commit
+        new_ref: Second ref/commit (default: HEAD)
+        prolly_dir: Repository directory
+        limit: Maximum number of diff events to display
+        prefix: Optional key prefix to filter diff results
+    """
+    repo = _get_repo(prolly_dir)
+
+    # Resolve old_ref
+    old_commit_hash = repo.resolve_ref(old_ref)
+    if old_commit_hash is None:
+        print(f"Error: Ref '{old_ref}' not found")
+        return
+    old_commit = repo.get_commit(old_commit_hash)
+    if old_commit is None:
+        print(f"Error: Commit not found")
+        return
+    old_hash_bytes = old_commit.tree_root
+    old_label = old_ref
+
+    # Resolve new_ref
+    if new_ref is None:
+        head_commit, ref_name = repo.get_head()
+        if head_commit is None:
+            print("Error: No commits in repository")
+            return
+        new_hash_bytes = head_commit.tree_root
+        new_label = f"HEAD ({ref_name})"
+    else:
+        new_commit_hash = repo.resolve_ref(new_ref)
+        if new_commit_hash is None:
+            print(f"Error: Ref '{new_ref}' not found")
+            return
+        new_commit = repo.get_commit(new_commit_hash)
+        if new_commit is None:
+            print(f"Error: Commit not found")
+            return
+        new_hash_bytes = new_commit.tree_root
+        new_label = new_ref
+
+    print("="*80)
+    print("DIFF: Comparing two commits")
+    print("="*80)
+    print(f"Old: {old_label} (tree: {old_hash_bytes.hex()[:16]}...)")
+    print(f"New: {new_label} (tree: {new_hash_bytes.hex()[:16]}...)")
+    if prefix:
+        print(f"Prefix: {prefix}")
+
+    if old_hash_bytes == new_hash_bytes:
+        print("\nTrees are identical (same root hash)")
+        return
+
+    # Create Differ instance
+    differ = Differ(repo.block_store)
+
+    print(f"\nDiff events (old -> new):")
+    print("-"*80)
+
+    event_count = 0
+    added_count = 0
+    deleted_count = 0
+    modified_count = 0
+
+    prefix_bytes = prefix.encode('utf-8') if prefix else None
+
+    for event in differ.diff(old_hash_bytes, new_hash_bytes, prefix=prefix_bytes):
+        event_count += 1
+
+        if limit is None or event_count <= limit:
+            if isinstance(event, Added):
+                print(f"+ {event.key} = {event.value}")
+                added_count += 1
+            elif isinstance(event, Deleted):
+                print(f"- {event.key} = {event.old_value}")
+                deleted_count += 1
+            elif isinstance(event, Modified):
+                print(f"M {event.key}: {event.old_value} -> {event.new_value}")
+                modified_count += 1
+        else:
+            # Just count without printing
+            if isinstance(event, Added):
+                added_count += 1
+            elif isinstance(event, Deleted):
+                deleted_count += 1
+            elif isinstance(event, Modified):
+                modified_count += 1
+
+    print("-"*80)
+    print(f"\nDiff Summary:")
+    print(f"  Added:    {added_count:,}")
+    print(f"  Deleted:  {deleted_count:,}")
+    print(f"  Modified: {modified_count:,}")
+    print(f"  Total:    {event_count:,}")
+
+    if limit is not None and event_count > limit:
+        print(f"\n(showing first {limit}, {event_count - limit:,} more events omitted)")
+
+    # Print diff statistics
+    diff_stats = differ.get_stats()
+    print(f"\nDiff Algorithm Statistics:")
+    print(f"  Subtrees skipped (identical hashes): {diff_stats.subtrees_skipped:,}")
+    print(f"  Nodes compared:                      {diff_stats.nodes_compared:,}")
 
 
 def diff_trees(old_hash: str, new_hash: str,
@@ -407,35 +582,53 @@ def set_key(root_hash: str, key: str, value: str, store_spec: str = 'cached-file
     print(f"{'='*80}")
 
 
-def gc_command(root_hashes: List[str], store_spec: str = 'cached-file://.prolly',
-               cache_size: Optional[int] = None, dry_run: bool = False):
+def gc_repo(prolly_dir: str = '.prolly', cache_size: int = 1000,
+            dry_run: bool = False, author: Optional[str] = None):
     """
-    Run garbage collection on the store.
+    Run garbage collection on the repository.
+
+    This uses the repository's commit graph to determine which tree roots
+    are reachable from any ref, and removes unreachable nodes from the store.
 
     Args:
-        root_hashes: List of root hashes to keep (everything else is garbage)
-        store_spec: Store specification string
-        cache_size: Optional cache size for cached stores
+        prolly_dir: Repository directory
+        cache_size: Cache size for cached stores
         dry_run: If True, only show what would be removed without actually removing
+        author: Optional author (unused, for compatibility with _get_repo)
     """
     print(f"{'='*80}")
     print(f"GARBAGE COLLECTION")
     print(f"{'='*80}")
-    print(f"Store: {store_spec}")
-    print(f"Root hashes to keep: {len(root_hashes)}")
-    for i, root_hash in enumerate(root_hashes, 1):
-        print(f"  {i}. {root_hash}")
+    print(f"Repository: {prolly_dir}")
     print(f"Mode: {'DRY RUN (no changes)' if dry_run else 'LIVE (will remove garbage)'}")
     print()
 
-    # Create store
-    store = create_store_from_spec(store_spec, cache_size=cache_size)
+    # Open repository
+    repo = _get_repo(prolly_dir, cache_size=cache_size, author=author)
+
+    # Get all reachable tree roots from refs
+    print("Computing reachable tree roots from refs...")
+    tree_roots = repo.get_reachable_tree_roots()
+
+    # Show refs and their commits
+    refs = repo.commit_graph_store.list_refs()
+    print(f"\nRefs ({len(refs)}):")
+    for ref_name, commit_hash in refs.items():
+        commit = repo.commit_graph_store.get_commit(commit_hash)
+        if commit:
+            tree_root_short = commit.tree_root.hex()[:16]
+            print(f"  {ref_name}: {commit_hash.hex()[:8]} (tree: {tree_root_short})")
+
+    print(f"\nReachable tree roots: {len(tree_roots)}")
+    for i, tree_root in enumerate(sorted(tree_roots), 1):
+        if i <= 10:  # Show first 10
+            print(f"  {i}. {tree_root.hex()[:16]}...")
+    if len(tree_roots) > 10:
+        print(f"  ... and {len(tree_roots) - 10} more")
 
     # Run garbage collection
-    print("Analyzing store...")
-    # Convert hex strings to bytes
-    root_set = {bytes.fromhex(h) for h in root_hashes}
-    stats = garbage_collect(store, root_set, dry_run=dry_run)
+    print("\nAnalyzing store...")
+    stats = garbage_collect(repo.block_store, tree_roots, dry_run=dry_run)
 
     print()
     print(f"{'='*80}")
@@ -455,12 +648,12 @@ def gc_command(root_hashes: List[str], store_spec: str = 'cached-file://.prolly'
         print(f"SUCCESS: Removed {stats.garbage_nodes:,} garbage nodes from store.")
 
     # Show cache statistics if available
-    if isinstance(store, CachedFSBlockStore):
+    if isinstance(repo.block_store, CachedFSBlockStore):
         print()
         print(f"{'='*80}")
         print(f"CACHE STATISTICS")
         print(f"{'='*80}")
-        cache_stats = store.get_cache_stats()
+        cache_stats = repo.block_store.get_cache_stats()
         for key, value in cache_stats.items():
             print(f"  {key}: {value}")
 
@@ -515,93 +708,89 @@ Examples:
                         help='Maximum number of commits to show')
 
     # Import SQLite subcommand
-    import_parser = subparsers.add_parser('import-sqlite', help='Import SQLite database into ProllyTree',
+    import_parser = subparsers.add_parser('import-sqlite', help='Import SQLite database and commit',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
   # Import database
-  python cli.py import-sqlite database.sqlite --store file:///tmp/data
+  python cli.py import-sqlite database.sqlite
 
   # Import specific tables
-  python cli.py import-sqlite database.sqlite --tables buses generators --store file:///tmp/data
+  python cli.py import-sqlite database.sqlite --tables buses generators
 
-  # Import with caching
-  python cli.py import-sqlite database.sqlite --store cached-file:///tmp/data --cache-size 1000
+  # Import with custom message
+  python cli.py import-sqlite database.sqlite --message "Import production data"
         ''')
 
     import_parser.add_argument('database', help='Path to SQLite database file')
-    import_parser.add_argument('--store', default='cached-file://.prolly',
-                        help='Store spec (default: cached-file://.prolly)')
+    import_parser.add_argument('--dir', default='.prolly',
+                        help='Repository directory (default: .prolly)')
     import_parser.add_argument('--pattern', type=float, default=0.0001,
                         help='Split pattern (default: 0.0001)')
     import_parser.add_argument('--seed', type=int, default=42,
                         help='Random seed (default: 42)')
-    import_parser.add_argument('--cache-size', type=int, default=None,
-                        help='Cache size for cached stores')
     import_parser.add_argument('--batch-size', type=int, default=1000,
                         help='Batch size for inserts (default: 1000)')
     import_parser.add_argument('--tables', nargs='+', default=None,
                         help='Specific table names to import')
+    import_parser.add_argument('--message', default=None,
+                        help='Commit message (default: auto-generated)')
     import_parser.add_argument('--verbose-batches', action='store_true',
                         help='Show detailed batch statistics')
     import_parser.add_argument('--validate', action='store_true',
                         help='Validate tree is sorted after each table import')
 
     # Dump subcommand
-    dump_parser = subparsers.add_parser('dump', help='Dump data from ProllyTree',
+    dump_parser = subparsers.add_parser('dump', help='Dump data from a ref or HEAD',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
-  # Dump all data
-  python cli.py dump abc123
+  # Dump all data from HEAD
+  python cli.py dump
 
-  # Dump schemas
-  python cli.py dump abc123 --prefix /s/
+  # Dump from a specific branch
+  python cli.py dump --ref main
 
-  # Dump table data
-  python cli.py dump abc123 --prefix /d/buses
+  # Dump schemas from HEAD
+  python cli.py dump --prefix /s/
 
-  # Dump with custom store
-  python cli.py dump abc123 --prefix /s/ --store file:///tmp/data
-
-  # Dump without reconstruction (raw arrays)
-  python cli.py dump abc123 --prefix /d/buses --no-reconstruct
+  # Dump table data from a commit
+  python cli.py dump --ref abc123 --prefix /d/buses
         ''')
 
-    dump_parser.add_argument('root_hash', help='Root hash of tree to dump')
+    dump_parser.add_argument('--ref', default=None,
+                        help='Ref name or commit hash (default: HEAD)')
+    dump_parser.add_argument('--dir', default='.prolly',
+                        help='Repository directory (default: .prolly)')
     dump_parser.add_argument('--prefix', type=str, default=None,
                         help='Key prefix to filter dump (default: dump all)')
-    dump_parser.add_argument('--store', default='cached-file://.prolly',
-                        help='Store spec (default: cached-file://.prolly)')
-    dump_parser.add_argument('--cache-size', type=int, default=None,
-                        help='Cache size for cached stores')
-    dump_parser.add_argument('--no-reconstruct', action='store_true',
-                        help='Show raw arrays instead of reconstructed objects')
 
     # Diff subcommand
-    diff_parser = subparsers.add_parser('diff', help='Diff two trees by root hash',
+    diff_parser = subparsers.add_parser('diff', help='Diff two commits or refs',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
-  # Diff two trees
-  python cli.py diff a16b213fc2e7d598 8b2d2b8e2c75c085
+  # Diff a ref with HEAD
+  python cli.py diff main
 
-  # Diff with custom store
-  python cli.py diff old_hash new_hash --store cached-file:///tmp/data
+  # Diff two refs
+  python cli.py diff main develop
+
+  # Diff two commits
+  python cli.py diff abc123 def456
 
   # Limit output
-  python cli.py diff old_hash new_hash --limit 100
+  python cli.py diff main --limit 100
 
   # Filter by key prefix
-  python cli.py diff old_hash new_hash --prefix /d/table_name
+  python cli.py diff main develop --prefix /d/table_name
         ''')
 
-    diff_parser.add_argument('old_hash', help='Root hash of old tree')
-    diff_parser.add_argument('new_hash', help='Root hash of new tree')
-    diff_parser.add_argument('--store', default='cached-file://.prolly',
-                        help='Store spec (default: cached-file://.prolly)')
-    diff_parser.add_argument('--cache-size', type=int, default=None,
-                        help='Cache size for cached stores')
+    diff_parser.add_argument('old_ref', help='Old ref/commit')
+    diff_parser.add_argument('new_ref', nargs='?', default=None,
+                        help='New ref/commit (default: HEAD)')
+    diff_parser.add_argument('--dir', default='.prolly',
+                        help='Repository directory (default: .prolly)')
     diff_parser.add_argument('--limit', type=int, default=None,
                         help='Maximum diff events to display (default: all)')
     diff_parser.add_argument('--prefix', type=str, default=None,
@@ -686,28 +875,27 @@ Examples:
                         help='Cache size for cached stores')
 
     # GC subcommand
-    gc_parser = subparsers.add_parser('gc', help='Garbage collect unreachable nodes',
+    gc_parser = subparsers.add_parser('gc', help='Garbage collect unreachable nodes from repository',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
-  # Remove garbage nodes (default behavior)
-  python cli.py gc 65161256c9d66c53 ce615a7ec196650a --store cached-file://.prolly
-
   # Dry run - show what would be removed without removing
-  python cli.py gc 65161256c9d66c53 --dry-run
+  python cli.py gc --dry-run
 
-  # Keep multiple roots
-  python cli.py gc root1 root2 root3 --store cached-file://.prolly
+  # Remove garbage nodes (live mode)
+  python cli.py gc
 
-Note: Garbage collection removes all nodes not reachable from the specified
-root hashes. This is useful for cleaning up old tree versions. Use --dry-run
+  # Use custom repository directory
+  python cli.py gc --dir /path/to/repo
+
+Note: Garbage collection automatically determines which tree nodes are reachable
+from any ref in the repository, and removes all unreachable nodes. Use --dry-run
 to preview what will be removed before actually removing it.
         ''')
-    gc_parser.add_argument('roots', nargs='+', help='Root hashes to keep (everything else is garbage)')
-    gc_parser.add_argument('--store', default='cached-file://.prolly',
-                        help='Store spec (default: cached-file://.prolly)')
-    gc_parser.add_argument('--cache-size', type=int, default=None,
-                        help='Cache size for cached stores')
+    gc_parser.add_argument('--dir', default='.prolly',
+                        help='Repository directory (default: .prolly)')
+    gc_parser.add_argument('--cache-size', type=int, default=1000,
+                        help='Cache size for cached stores (default: 1000)')
     gc_parser.add_argument('--dry-run', action='store_true',
                         help='Show what would be removed without actually removing (default: actually remove)')
 
@@ -725,30 +913,28 @@ to preview what will be removed before actually removing it.
             max_count=args.max_count
         )
     elif args.command == 'import-sqlite':
-        store = create_store_from_spec(args.store, cache_size=args.cache_size)
-        import_sqlite_database(
+        import_sqlite_to_repo(
             db_path=args.database,
-            store=store,
+            prolly_dir=args.dir,
             pattern=args.pattern,
             seed=args.seed,
             batch_size=args.batch_size,
             tables_filter=args.tables,
             verbose_batches=args.verbose_batches,
-            validate=args.validate
+            validate=args.validate,
+            message=args.message
         )
     elif args.command == 'dump':
-        dump_database(
-            root_hash=args.root_hash,
-            store_spec=args.store,
-            cache_size=args.cache_size,
+        dump_from_repo(
+            ref=args.ref,
+            prolly_dir=args.dir,
             prefix=args.prefix
         )
     elif args.command == 'diff':
-        diff_trees(
-            old_hash=args.old_hash,
-            new_hash=args.new_hash,
-            store_spec=args.store,
-            cache_size=args.cache_size,
+        diff_refs(
+            old_ref=args.old_ref,
+            new_ref=args.new_ref,
+            prolly_dir=args.dir,
             limit=args.limit,
             prefix=args.prefix
         )
@@ -783,9 +969,8 @@ to preview what will be removed before actually removing it.
             cache_size=args.cache_size
         )
     elif args.command == 'gc':
-        gc_command(
-            root_hashes=args.roots,
-            store_spec=args.store,
+        gc_repo(
+            prolly_dir=args.dir,
             cache_size=args.cache_size,
             dry_run=args.dry_run
         )
