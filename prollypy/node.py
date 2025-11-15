@@ -62,8 +62,10 @@ class Node:
 
     def __init__(self, is_leaf: bool = True):
         self.is_leaf: bool = is_leaf
-        self.keys: list[str] = []      # Separator keys (for internal) or actual keys (for leaves)
-        self.values: list[str] = []    # Child pointers (for internal) or actual values (for leaves)
+        self.keys: list[bytes] = []      # Separator keys (for internal) or actual keys (for leaves)
+        # For leaf nodes: values are bytes (data values)
+        # For internal nodes: values are bytes (child hashes)
+        self.values: list[bytes] = []
 
     def __repr__(self) -> str:
         if self.is_leaf:
@@ -122,6 +124,7 @@ class Node:
                         if store:
                             error_msg.append(f"\n  Children first keys:")
                             for j, child_hash in enumerate(self.values):
+                                assert isinstance(child_hash, str), "Internal node values must be strings"
                                 child = store.get_node(child_hash)
                                 if child and len(child.keys) > 0:
                                     first_key = child.keys[0] if child.is_leaf else child.keys[0] if child.keys else "<no keys>"
@@ -161,7 +164,7 @@ class Node:
                     f"  Child index: {child_idx}"
                 )
 
-    def _get_first_key(self, node: 'Node', store: 'Store') -> Optional[str]:
+    def _get_first_key(self, node: 'Node', store: 'Store') -> Optional[bytes]:
         """Get the first key in a node's subtree."""
         if node.is_leaf:
             return node.keys[0] if len(node.keys) > 0 else None
@@ -170,22 +173,24 @@ class Node:
             if len(node.values) == 0:
                 return None
             child_hash = node.values[0]
+            assert isinstance(child_hash, str), "Internal node values must be strings"
             child = store.get_node(child_hash)
             if child is None:
                 return None
             return self._get_first_key(child, store)
 
-    def _collect_keys(self, result: list[str], store: Optional['Store']):
+    def _collect_keys(self, result: list[bytes], store: Optional['Store']):
         """Recursively collect all keys from this node's subtree in traversal order."""
         if self.is_leaf:
             # For leaf nodes, just add all keys
             result.extend(self.keys)
         else:
             # For internal nodes, traverse children in order
-            for i, child_hash in enumerate(self.values):
+            for child_hash in self.values:
                 # Get child from store
                 if store is None:
                     raise ValueError("Cannot validate internal node without store")
+                assert isinstance(child_hash, str), "Internal node values must be strings"
                 child = store.get_node(child_hash)
                 if child is None:
                     raise ValueError(f"Child node {child_hash} not found in store")

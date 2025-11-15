@@ -60,7 +60,7 @@ class ProllyTree:
         # Take first 4 bytes and convert to uint32
         return int.from_bytes(hash_bytes[:4], byteorder='big')
 
-    def _hash_node(self, node: Node) -> str:
+    def _hash_node(self, node: Node) -> bytes:
         """
         Compute content hash for a node.
 
@@ -71,20 +71,20 @@ class ProllyTree:
         if node.is_leaf:
             # Hash key-value pairs
             for key, value in zip(node.keys, node.values):
-                content.append(f"{key}:{value}".encode('utf-8'))
+                content.append(key + b':' + value)
         else:
             # Hash separator keys and child hashes
             for i, child_hash in enumerate(node.values):
                 if i < len(node.keys):
-                    content.append(f"{node.keys[i]}:{child_hash}".encode('utf-8'))
+                    content.append(node.keys[i] + b':' + child_hash)
                 else:
-                    content.append(f"_:{child_hash}".encode('utf-8'))
+                    content.append(b'_:' + child_hash)
 
         # Combine all content and hash
         combined = b'|'.join(content)
-        return hashlib.sha256(combined).hexdigest()[:16]  # Use first 16 chars for readability
+        return hashlib.sha256(combined).digest()[:16]  # Use first 16 bytes
 
-    def _store_node(self, node: Node) -> str:
+    def _store_node(self, node: Node) -> bytes:
         """Store node and return its content-based hash"""
         node_hash = self._hash_node(node)
 
@@ -102,11 +102,11 @@ class ProllyTree:
 
         return node_hash
 
-    def _get_node(self, node_hash: str) -> Optional[Node]:
+    def _get_node(self, node_hash: bytes) -> Optional[Node]:
         """Retrieve node by hash"""
         return self.store.get_node(node_hash)
 
-    def insert_batch(self, mutations: list[tuple[str, str]], verbose: bool = True) -> dict[str, int]:
+    def insert_batch(self, mutations: list[tuple[bytes, bytes]], verbose: bool = True) -> dict[str, int]:
         """
         Incrementally insert a batch of (key, value) pairs.
         mutations: sorted list of (key, value) tuples
@@ -182,7 +182,7 @@ class ProllyTree:
 
         return stats
 
-    def _rebuild_with_mutations(self, node: Node, mutations: list[tuple[str, str]], verbose: bool = True) -> Node:
+    def _rebuild_with_mutations(self, node: Node, mutations: list[tuple[bytes, bytes]], verbose: bool = True) -> Node:
         """
         Core incremental rebuild logic.
         Returns: new node (possibly with different structure)
@@ -269,7 +269,7 @@ class ProllyTree:
                     new_node.validate(self.store, context="_rebuild_with_mutations (internal node rebuild)")
                 return new_node
 
-    def _get_first_key(self, node: Node) -> Optional[str]:
+    def _get_first_key(self, node: Node) -> Optional[bytes]:
         """
         Get the first actual key in a node's subtree.
 
@@ -403,7 +403,7 @@ class ProllyTree:
             # Multiple internal nodes - build parent recursively
             return self._build_internal_from_children(internal_nodes, verbose)
 
-    def _merge_sorted(self, old_items: list[tuple[str, str]], new_items: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    def _merge_sorted(self, old_items: list[tuple[bytes, bytes]], new_items: list[tuple[bytes, bytes]]) -> list[tuple[bytes, bytes]]:
         """Merge two sorted lists of (key, value) tuples"""
         result = []
         i, j = 0, 0
@@ -425,7 +425,7 @@ class ProllyTree:
         result.extend(new_items[j:])
         return result
 
-    def _build_leaves(self, items: list[tuple[str, str]]) -> list[Node]:
+    def _build_leaves(self, items: list[tuple[bytes, bytes]]) -> list[Node]:
         """
         Build leaf nodes from sorted items using rolling hash for splits.
 
@@ -490,7 +490,7 @@ class ProllyTree:
         root_hash = self._hash_node(self.root)
         self._print_node(self.root, root_hash, prefix="", is_last=True, verbose=verbose)
 
-    def _print_node(self, node: Node, node_hash: Optional[str], prefix: str = "", is_last: bool = True, reused_hashes: Optional[set[str]] = None, verbose: bool = False):
+    def _print_node(self, node: Node, node_hash: Optional[bytes], prefix: str = "", is_last: bool = True, reused_hashes: Optional[set[bytes]] = None, verbose: bool = False):
         """
         Recursively print node and its children.
 
@@ -552,7 +552,7 @@ class ProllyTree:
         """Summarize operations into statistics"""
         return self.stats.to_dict()
 
-    def items(self, prefix: str = "") -> Iterator[tuple[str, str]]:
+    def items(self, prefix: bytes = b"") -> Iterator[tuple[bytes, bytes]]:
         """
         Generator that yields (key, value) pairs with keys matching the given prefix.
 
@@ -580,22 +580,17 @@ class ProllyTree:
         while entry:
             key, value = entry
             # Check if key matches prefix
-            if isinstance(key, str):
-                if key.startswith(prefix):
-                    found_match = True
-                    yield (key, value)
-                elif prefix and found_match:
-                    # Key doesn't match prefix and we've seen matches before
-                    # Since keys are sorted, we're past all matches
-                    break
-            else:
-                # Non-string keys - only yield if no prefix
-                if not prefix:
-                    yield (key, value)
+            if key.startswith(prefix):
+                found_match = True
+                yield (key, value)
+            elif prefix and found_match:
+                # Key doesn't match prefix and we've seen matches before
+                # Since keys are sorted, we're past all matches
+                break
 
             entry = cursor.next()
 
-    def validate_sorted(self) -> tuple[bool, Optional[str], Optional[int], Optional[str], Optional[str]]:
+    def validate_sorted(self) -> tuple[bool, Optional[str], Optional[int], Optional[bytes], Optional[bytes]]:
         """
         Validate that all keys in the tree are in sorted order with no duplicates.
 
