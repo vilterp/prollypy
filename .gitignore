@@ -1,3 +1,4 @@
 .prolly
 __pycache__/
 temp/
+.vscode/settings.json
