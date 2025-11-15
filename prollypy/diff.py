@@ -82,7 +82,7 @@ class Differ:
         self.store = store
         self.stats = DiffStats()
 
-    def diff(self, old_hash: str, new_hash: str, prefix: str = None) -> Iterator[DiffEvent]:
+    def diff(self, old_hash: str, new_hash: str, prefix: Optional[str] = None) -> Iterator[DiffEvent]:
         """
         Compute differences between two trees using cursor-based traversal.
 
@@ -475,7 +475,7 @@ class Differ:
 
 
 # Backward compatibility function
-def diff(store: Store, old_hash: str, new_hash: str, prefix: str = None) -> Iterator[DiffEvent]:
+def diff(store: Store, old_hash: str, new_hash: str, prefix: Optional[str] = None) -> Iterator[DiffEvent]:
     """
     Compute differences between two trees (backward compatibility wrapper).
 

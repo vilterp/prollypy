@@ -57,10 +57,11 @@ def dump_database(root_hash: str, store_spec: str = 'cached-file://.prolly',
     tree = ProllyTree(pattern=0.0001, seed=42, store=store)
 
     print(f"Loading tree from root hash: {root_hash}")
-    tree.root = store.get_node(root_hash)
-    if not tree.root:
+    root_node = store.get_node(root_hash)
+    if not root_node:
         print(f"Error: Root hash {root_hash} not found in store")
         return
+    tree.root = root_node
 
     # Use prefix if provided, otherwise dump everything
     prefix = prefix or ""
@@ -194,11 +195,12 @@ def print_tree_structure(root_hash: str, store_spec: str = 'cached-file://.proll
 
     # Create tree and load from root hash
     tree = ProllyTree(pattern=0.0001, seed=42, store=store)
-    tree.root = store.get_node(root_hash)
+    root_node = store.get_node(root_hash)
 
-    if not tree.root:
+    if not root_node:
         print(f"\nError: Root hash {root_hash} not found in store")
         return
+    tree.root = root_node
 
     # If prefix is specified, we'll filter in the visualization
     # Note: The _print_tree method doesn't natively support prefix filtering,

@@ -70,6 +70,7 @@ class DB:
             validate: If True, validate tree structure during operations (slower)
         """
         self.tree = ProllyTree(pattern=pattern, seed=seed, store=store, validate=validate)
+        self._validate_after_batch = False  # Internal flag for validation control
 
     def create_table(self, name: str, columns: List[str], types: List[str],
                      primary_key: List[str]) -> Table:

@@ -16,6 +16,11 @@ Node class for ProllyTree.
 A Node represents either a leaf or internal node in the tree structure.
 """
 
+from typing import Any, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .store import Store
+
 
 class Node:
     """
@@ -67,18 +72,18 @@ class Node:
     - len(keys) == len(values)
     """
 
-    def __init__(self, is_leaf=True):
-        self.is_leaf = is_leaf
-        self.keys = []      # Separator keys (for internal) or actual keys (for leaves)
-        self.values = []    # Child pointers (for internal) or actual values (for leaves)
+    def __init__(self, is_leaf: bool = True) -> None:
+        self.is_leaf: bool = is_leaf
+        self.keys: "list[str]" = []      # Separator keys (for internal) or actual keys (for leaves)
+        self.values: "list[str]" = []    # Child pointers (for internal) or actual values (for leaves)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         if self.is_leaf:
             return f"Leaf({list(zip(self.keys, self.values))})"
         else:
             return f"Internal(keys={self.keys}, children={len(self.values)})"
 
-    def validate(self, store=None, context=""):
+    def validate(self, store: Optional['Store'] = None, context: str = "") -> None:
         """
         Validate this node and its entire subtree.
 
@@ -138,7 +143,7 @@ class Node:
                     raise ValueError("\n".join(error_msg))
             prev_key = key
 
-    def _validate_separators(self, store, context_str):
+    def _validate_separators(self, store: 'Store', context_str: str) -> None:
         """
         Validate separator invariants for internal nodes.
 
@@ -168,7 +173,7 @@ class Node:
                     f"  Child index: {child_idx}"
                 )
 
-    def _get_first_key(self, node, store):
+    def _get_first_key(self, node: 'Node', store: 'Store') -> Optional[str]:
         """Get the first key in a node's subtree."""
         if node.is_leaf:
             return node.keys[0] if len(node.keys) > 0 else None
@@ -182,7 +187,7 @@ class Node:
                 return None
             return self._get_first_key(child, store)
 
-    def _collect_keys(self, result, store):
+    def _collect_keys(self, result: "list[str]", store: Optional['Store']) -> None:
         """Recursively collect all keys from this node's subtree in traversal order."""
         if self.is_leaf:
             # For leaf nodes, just add all keys

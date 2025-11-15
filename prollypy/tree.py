@@ -21,7 +21,7 @@ Features:
 """
 
 import hashlib
-from typing import Optional
+from typing import Optional, Iterator
 from .node import Node
 from .store import Store, MemoryStore, CachedFSStore
 from .cursor import TreeCursor
@@ -32,15 +32,15 @@ class BatchStats:
     __slots__ = ('nodes_created', 'leaves_created', 'internals_created',
                  'nodes_reused', 'subtrees_reused', 'nodes_read')
 
-    def __init__(self):
-        self.nodes_created = 0
-        self.leaves_created = 0
-        self.internals_created = 0
-        self.nodes_reused = 0
-        self.subtrees_reused = 0
-        self.nodes_read = 0
+    def __init__(self) -> None:
+        self.nodes_created: int = 0
+        self.leaves_created: int = 0
+        self.internals_created: int = 0
+        self.nodes_reused: int = 0
+        self.subtrees_reused: int = 0
+        self.nodes_read: int = 0
 
-    def reset(self):
+    def reset(self) -> None:
         """Reset all counters to zero."""
         self.nodes_created = 0
         self.leaves_created = 0
@@ -49,7 +49,7 @@ class BatchStats:
         self.subtrees_reused = 0
         self.nodes_read = 0
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, int]:
         """Convert to dictionary for backwards compatibility."""
         return {
             'nodes_created': self.nodes_created,
@@ -83,11 +83,11 @@ class ProllyTree:
         # Operation statistics
         self.stats = BatchStats()
 
-    def reset_stats(self):
+    def reset_stats(self) -> None:
         """Reset operation statistics for a new batch"""
         self.stats.reset()
 
-    def _rolling_hash(self, current_hash, data):
+    def _rolling_hash(self, current_hash: int, data: bytes) -> int:
         """
         Deterministic rolling hash using hashlib (SHA256).
         Updates the hash with new data.
@@ -106,7 +106,7 @@ class ProllyTree:
         # Take first 4 bytes and convert to uint32
         return int.from_bytes(hash_bytes[:4], byteorder='big')
 
-    def _hash_node(self, node):
+    def _hash_node(self, node: Node) -> str:
         """
         Compute content hash for a node.
 
@@ -130,7 +130,7 @@ class ProllyTree:
         combined = b'|'.join(content)
         return hashlib.sha256(combined).hexdigest()[:16]  # Use first 16 chars for readability
 
-    def _store_node(self, node):
+    def _store_node(self, node: Node) -> str:
         """Store node and return its content-based hash"""
         node_hash = self._hash_node(node)
 
@@ -148,11 +148,11 @@ class ProllyTree:
 
         return node_hash
 
-    def _get_node(self, node_hash):
+    def _get_node(self, node_hash: str) -> Optional[Node]:
         """Retrieve node by hash"""
         return self.store.get_node(node_hash)
 
-    def insert_batch(self, mutations, verbose=True):
+    def insert_batch(self, mutations: "list[tuple[str, str]]", verbose: bool = True) -> dict[str, int]:
         """
         Incrementally insert a batch of (key, value) pairs.
         mutations: sorted list of (key, value) tuples
@@ -228,7 +228,7 @@ class ProllyTree:
 
         return stats
 
-    def _rebuild_with_mutations(self, node, mutations, verbose=True):
+    def _rebuild_with_mutations(self, node: Node, mutations: "list[tuple[str, str]]", verbose: bool = True) -> Node:
         """
         Core incremental rebuild logic.
         Returns: new node (possibly with different structure)
@@ -307,6 +307,8 @@ class ProllyTree:
 
                 # Rebuild child (or reuse if no mutations)
                 child_node = self._get_node(child_hash)
+                if child_node is None:
+                    raise ValueError(f"Child node {child_hash} not found in store")
                 new_child = self._rebuild_with_mutations(child_node, child_mutations, verbose)
 
                 # The rebuild might return multiple nodes (if split), or a single node
@@ -329,7 +331,7 @@ class ProllyTree:
                     new_node.validate(self.store, context="_rebuild_with_mutations (internal node rebuild)")
                 return new_node
 
-    def _get_first_key(self, node):
+    def _get_first_key(self, node: Node) -> Optional[str]:
         """
         Get the first actual key in a node's subtree.
 
@@ -354,7 +356,7 @@ class ProllyTree:
                 return None
             return self._get_first_key(child)
 
-    def _build_internal_from_children(self, children, verbose=False) -> Node | None:
+    def _build_internal_from_children(self, children: "list[Node]", verbose: bool = False) -> Node:
         """
         Build internal node(s) from a list of children using rolling hash for splits.
 
@@ -380,7 +382,7 @@ class ProllyTree:
         for i, child in enumerate(children):
             # Store or reuse child hash
             if hasattr(child, '_reused_hash'):
-                child_hash = child._reused_hash
+                child_hash = getattr(child, '_reused_hash')
                 delattr(child, '_reused_hash')
             else:
                 child_hash = self._store_node(child)
@@ -430,7 +432,10 @@ class ProllyTree:
             if len(current_internal.values) == 1 and not internal_nodes:
                 # Only one child total - just return it directly
                 child_hash = current_internal.values[0]
-                return self._get_node(child_hash)
+                child = self._get_node(child_hash)
+                if child is None:
+                    raise ValueError(f"Child node {child_hash} not found in store")
+                return child
             elif len(current_internal.values) > 1:
                 # Validate before adding
                 if self.validate:
@@ -453,7 +458,10 @@ class ProllyTree:
                 if verbose:
                     print(f"  -> Unwrapping single-child internal node")
                 child_hash = node.values[0]
-                return self._get_node(child_hash)
+                child = self._get_node(child_hash)
+                if child is None:
+                    raise ValueError(f"Child node {child_hash} not found in store")
+                return child
             elif len(node.values) == 0:
                 raise ValueError("Internal node has no children")
             else:
@@ -467,7 +475,7 @@ class ProllyTree:
                 print(f"  -> Created {len(internal_nodes)} internal nodes, building parent...")
             return self._build_internal_from_children(internal_nodes, verbose)
 
-    def _merge_sorted(self, old_items, new_items):
+    def _merge_sorted(self, old_items: "list[tuple[str, str]]", new_items: "list[tuple[str, str]]") -> list[tuple[str, str]]:
         """Merge two sorted lists of (key, value) tuples"""
         result = []
         i, j = 0, 0
@@ -489,7 +497,7 @@ class ProllyTree:
         result.extend(new_items[j:])
         return result
 
-    def _build_leaves(self, items):
+    def _build_leaves(self, items: "list[tuple[str, str]]") -> list[Node]:
         """
         Build leaf nodes from sorted items using rolling hash for splits.
 
@@ -538,10 +546,10 @@ class ProllyTree:
 
         return leaves if leaves else [Node(is_leaf=True)]
 
-    def _print_tree(self, label="", verbose=False):
+    def _print_tree(self, label: str = "", verbose: bool = False) -> None:
         """
         Print tree structure for debugging.
-        
+
         Args:
             label: Label to display with the tree
             verbose: If True, print all leaf node values. If False, only show first/last keys and count.
@@ -554,10 +562,10 @@ class ProllyTree:
         root_hash = self._hash_node(self.root)
         self._print_node(self.root, root_hash, prefix="", is_last=True, verbose=verbose)
 
-    def _print_node(self, node, node_hash, prefix="", is_last=True, reused_hashes=None, verbose=False):
+    def _print_node(self, node: Node, node_hash: Optional[str], prefix: str = "", is_last: bool = True, reused_hashes: "Optional[set[str]]" = None, verbose: bool = False) -> None:
         """
         Recursively print node and its children.
-        
+
         Args:
             node: Node to print
             node_hash: Hash of the node
@@ -598,10 +606,12 @@ class ProllyTree:
             extension = "    " if is_last else "│   "
             for i, child_hash in enumerate(node.values):
                 child = self._get_node(child_hash)
+                if child is None:
+                    continue
                 child_is_last = (i == len(node.values) - 1)
                 self._print_node(child, child_hash, prefix + extension, child_is_last, reused_hashes, verbose)
 
-    def _print_ops(self):
+    def _print_ops(self) -> None:
         """Print operation statistics"""
         print(f"\n{'='*60}")
         print("OPERATIONS:")
@@ -610,11 +620,11 @@ class ProllyTree:
         for key, value in stats.items():
             print(f"{key}: {value}")
 
-    def _summarize_ops(self):
+    def _summarize_ops(self) -> dict[str, int]:
         """Summarize operations into statistics"""
         return self.stats.to_dict()
 
-    def items(self, prefix=""):
+    def items(self, prefix: str = "") -> Iterator[tuple[str, str]]:
         """
         Generator that yields (key, value) pairs with keys matching the given prefix.
 
@@ -657,7 +667,7 @@ class ProllyTree:
 
             entry = cursor.next()
 
-    def _items_from_node(self, node, prefix):
+    def _items_from_node(self, node: Node, prefix: str) -> Iterator[tuple[str, str]]:
         """Recursively yield items from node and its children that match prefix"""
         if node.is_leaf:
             # Yield matching leaf entries
@@ -697,13 +707,14 @@ class ProllyTree:
 
                 # This child might contain matching keys
                 child = self._get_node(child_hash)
-                yield from self._items_from_node(child, prefix)
+                if child is not None:
+                    yield from self._items_from_node(child, prefix)
 
-    def verify(self):
+    def verify(self) -> list[tuple[str, str]]:
         """Verify tree structure and return all key-value pairs in order (for backwards compatibility)"""
         return list(self.items())
 
-    def validate_sorted(self):
+    def validate_sorted(self) -> tuple[bool, Optional[str], Optional[int], Optional[str], Optional[str]]:
         """
         Validate that all keys in the tree are in sorted order with no duplicates.
 

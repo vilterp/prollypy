@@ -17,8 +17,9 @@ Provides a cursor abstraction that traverses trees in sorted key order,
 independent of tree structure.
 """
 
-from typing import Optional, Tuple, Any
+from typing import Optional, Tuple
 from .store import Store
+from .node import Node
 
 
 class TreeCursor:
@@ -52,7 +53,7 @@ class TreeCursor:
         else:
             self._descend_to_first(root_hash)
 
-    def _seek(self, node_hash: str, target: str):
+    def _seek(self, node_hash: str, target: str) -> None:
         """
         Seek to the first key >= target in O(log n) time.
 
@@ -102,7 +103,7 @@ class TreeCursor:
 
         self.stack.append((node, idx))
 
-    def _descend_to_first(self, node_hash: str):
+    def _descend_to_first(self, node_hash: str) -> None:
         """Descend to the leftmost leaf starting from node_hash."""
         node = self.store.get_node(node_hash)
         if node is None:
@@ -138,7 +139,7 @@ class TreeCursor:
 
         return None
 
-    def next(self) -> Optional[Tuple[Any, Any]]:
+    def next(self) -> Optional[Tuple[str, str]]:
         """
         Advance to the next key-value pair.
 
@@ -185,7 +186,7 @@ class TreeCursor:
                 self.stack.pop()
                 return self.next()
 
-    def _advance_to_next_leaf(self):
+    def _advance_to_next_leaf(self) -> None:
         """After exhausting a leaf, move to the next leaf."""
         while self.stack:
             node, idx = self.stack[-1]
@@ -207,7 +208,7 @@ class TreeCursor:
                 # Leaf node that's exhausted
                 self.stack.pop()
 
-    def skip_subtree(self, subtree_hash: str):
+    def skip_subtree(self, subtree_hash: str) -> None:
         """
         Skip over a subtree entirely without visiting its entries.
 
