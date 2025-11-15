@@ -47,7 +47,7 @@ def _do_insert(old_tree, mutations, expected_contents, verbose=False):
     stats = new_tree.insert_batch(mutations, verbose=verbose)
 
     # Verify the result
-    result = new_tree.verify()
+    result = list(new_tree.items())
     assert result == expected_contents, f"Expected {expected_contents}, got {result}"
 
     if verbose:

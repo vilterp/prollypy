@@ -15,40 +15,6 @@ from .store import Store, MemoryStore, CachedFSStore
 from .cursor import TreeCursor
 
 
-class BatchStats:
-    """Statistics for a single batch operation."""
-    __slots__ = ('nodes_created', 'leaves_created', 'internals_created',
-                 'nodes_reused', 'subtrees_reused', 'nodes_read')
-
-    def __init__(self):
-        self.nodes_created: int = 0
-        self.leaves_created: int = 0
-        self.internals_created: int = 0
-        self.nodes_reused: int = 0
-        self.subtrees_reused: int = 0
-        self.nodes_read: int = 0
-
-    def reset(self):
-        """Reset all counters to zero."""
-        self.nodes_created = 0
-        self.leaves_created = 0
-        self.internals_created = 0
-        self.nodes_reused = 0
-        self.subtrees_reused = 0
-        self.nodes_read = 0
-
-    def to_dict(self) -> dict[str, int]:
-        """Convert to dictionary for backwards compatibility."""
-        return {
-            'nodes_created': self.nodes_created,
-            'leaves_created': self.leaves_created,
-            'internals_created': self.internals_created,
-            'nodes_reused': self.nodes_reused,
-            'subtrees_reused': self.subtrees_reused,
-            'nodes_read': self.nodes_read,
-        }
-
-
 class ProllyTree:
     def __init__(self, pattern=0.25, seed=42, store: Optional[Store] = None, validate=False):
         """
@@ -655,53 +621,6 @@ class ProllyTree:
 
             entry = cursor.next()
 
-    def _items_from_node(self, node: Node, prefix: str) -> Iterator[tuple[str, str]]:
-        """Recursively yield items from node and its children that match prefix"""
-        if node.is_leaf:
-            # Yield matching leaf entries
-            for key, value in zip(node.keys, node.values):
-                # Handle both string and non-string keys
-                if isinstance(key, str):
-                    if key.startswith(prefix):
-                        yield (key, value)
-                else:
-                    # For non-string keys, only yield if prefix is empty
-                    if not prefix:
-                        yield (key, value)
-        else:
-            # For internal nodes, traverse children
-            for i, child_hash in enumerate(node.values):
-                # Get the range this child covers
-                # child contains keys: [lower_bound, upper_bound)
-                # where lower_bound = node.keys[i-1] (or -inf for i=0)
-                # and upper_bound = node.keys[i] (or +inf for last child)
-
-                lower_bound = node.keys[i-1] if i > 0 else (""  if isinstance(prefix, str) else None)
-                upper_bound = node.keys[i] if i < len(node.keys) else None
-
-                # Skip if this child is entirely before the prefix
-                # Child is before if its upper bound is <= prefix
-                if prefix and isinstance(upper_bound, str) and upper_bound <= prefix:
-                    continue
-
-                # Skip if this child is entirely after any possible prefix match
-                # Child is after if its lower bound starts with something > any prefix match
-                # Use a large suffix to represent "end of prefix range"
-                if prefix and isinstance(lower_bound, str):
-                    # If lower bound doesn't start with prefix and is lexicographically after
-                    # all possible keys with this prefix, skip
-                    if not lower_bound.startswith(prefix) and lower_bound > prefix + '\xff\xff\xff\xff':
-                        break
-
-                # This child might contain matching keys
-                child = self._get_node(child_hash)
-                if child is not None:
-                    yield from self._items_from_node(child, prefix)
-
-    def verify(self) -> list[tuple[str, str]]:
-        """Verify tree structure and return all key-value pairs in order (for backwards compatibility)"""
-        return list(self.items())
-
     def validate_sorted(self) -> tuple[bool, Optional[str], Optional[int], Optional[str], Optional[str]]:
         """
         Validate that all keys in the tree are in sorted order with no duplicates.
@@ -732,3 +651,37 @@ class ProllyTree:
             entry = cursor.next()
 
         return (True, None, None, None, None)
+
+
+class BatchStats:
+    """Statistics for a single batch operation."""
+    __slots__ = ('nodes_created', 'leaves_created', 'internals_created',
+                 'nodes_reused', 'subtrees_reused', 'nodes_read')
+
+    def __init__(self):
+        self.nodes_created: int = 0
+        self.leaves_created: int = 0
+        self.internals_created: int = 0
+        self.nodes_reused: int = 0
+        self.subtrees_reused: int = 0
+        self.nodes_read: int = 0
+
+    def reset(self):
+        """Reset all counters to zero."""
+        self.nodes_created = 0
+        self.leaves_created = 0
+        self.internals_created = 0
+        self.nodes_reused = 0
+        self.subtrees_reused = 0
+        self.nodes_read = 0
+
+    def to_dict(self) -> dict[str, int]:
+        """Convert to dictionary for backwards compatibility."""
+        return {
+            'nodes_created': self.nodes_created,
+            'leaves_created': self.leaves_created,
+            'internals_created': self.internals_created,
+            'nodes_reused': self.nodes_reused,
+            'subtrees_reused': self.subtrees_reused,
+            'nodes_read': self.nodes_read,
+        }
