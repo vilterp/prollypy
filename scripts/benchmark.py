@@ -164,8 +164,8 @@ def main():
     parser.add_argument(
         "-n", "--num-pairs",
         type=int,
-        default=10000,
-        help="Number of key-value pairs to insert (default: 10000)"
+        default=500000,
+        help="Number of key-value pairs to insert (default: 500000)"
     )
     parser.add_argument(
         "-p", "--pattern",
