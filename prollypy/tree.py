@@ -187,31 +187,19 @@ class ProllyTree:
         Core incremental rebuild logic.
         Returns: new node (possibly with different structure)
         """
-        if verbose:
-            node_type = 'Leaf' if node.is_leaf else 'Internal'
-            print(f"\n_rebuild_with_mutations: {node_type} node with {len(node.keys)} keys, {len(mutations)} mutations")
-
         if not mutations:
             # No mutations for this subtree - REUSE it!
-            if verbose:
-                print(f"  -> No mutations, reusing node")
             return node
 
         if node.is_leaf:
             # Leaf node: merge old data with mutations
-            if verbose:
-                print(f"  -> Leaf node, merging {len(node.keys)} existing + {len(mutations)} new entries...")
             merged = self._merge_sorted(
                 list(zip(node.keys, node.values)),
                 mutations
             )
-            if verbose:
-                print(f"  -> Merged to {len(merged)} total entries")
 
             # Build new leaf nodes (may split if too large)
             new_leaves = self._build_leaves(merged)
-            if verbose:
-                print(f"  -> Built {len(new_leaves)} leaf nodes")
 
             if len(new_leaves) == 1:
                 return new_leaves[0]
@@ -221,8 +209,6 @@ class ProllyTree:
 
         else:
             # Internal node: partition mutations to children and rebuild recursively
-            if verbose:
-                print(f"  -> Internal node, partitioning {len(mutations)} mutations to children")
 
             # Recursively rebuild children that have mutations
             new_children = []
@@ -271,8 +257,6 @@ class ProllyTree:
                 else:
                     new_children.append(new_child)
 
-            if verbose:
-                print(f"  -> Rebuilt {len(new_children)} children from {len(node.values)} original children")
 
             # Now rebuild internal structure from new children
             if len(new_children) == 1:
@@ -374,12 +358,6 @@ class ProllyTree:
                         internal_nodes.append(current_internal)
                         current_internal = Node(is_leaf=False)
                         roll_hash = self.seed  # Reset hash for next node
-                        if verbose:
-                            print(f"  -> Internal node split at separator {separator} (hash={roll_hash} < {self.pattern})")
-                else:
-                    # Empty child node - skip it
-                    if verbose:
-                        print(f"  -> Warning: child {i+1} has no keys, skipping separator")
 
         # Add the last internal node (but only if it has multiple children)
         if current_internal.values:
@@ -409,8 +387,6 @@ class ProllyTree:
             node = internal_nodes[0]
             if len(node.values) == 1:
                 # Unwrap single-child internal node - return the child directly
-                if verbose:
-                    print(f"  -> Unwrapping single-child internal node")
                 child_hash = node.values[0]
                 child = self._get_node(child_hash)
                 if child is None:
@@ -425,8 +401,6 @@ class ProllyTree:
                 return node
         else:
             # Multiple internal nodes - build parent recursively
-            if verbose:
-                print(f"  -> Created {len(internal_nodes)} internal nodes, building parent...")
             return self._build_internal_from_children(internal_nodes, verbose)
 
     def _merge_sorted(self, old_items: list[tuple[str, str]], new_items: list[tuple[str, str]]) -> list[tuple[str, str]]:
