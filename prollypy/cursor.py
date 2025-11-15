@@ -53,7 +53,7 @@ class TreeCursor:
         else:
             self._descend_to_first(root_hash)
 
-    def _seek(self, node_hash: str, target: str) -> None:
+    def _seek(self, node_hash: str, target: str):
         """
         Seek to the first key >= target in O(log n) time.
 
@@ -103,7 +103,7 @@ class TreeCursor:
 
         self.stack.append((node, idx))
 
-    def _descend_to_first(self, node_hash: str) -> None:
+    def _descend_to_first(self, node_hash: str):
         """Descend to the leftmost leaf starting from node_hash."""
         node = self.store.get_node(node_hash)
         if node is None:
@@ -186,7 +186,7 @@ class TreeCursor:
                 self.stack.pop()
                 return self.next()
 
-    def _advance_to_next_leaf(self) -> None:
+    def _advance_to_next_leaf(self):
         """After exhausting a leaf, move to the next leaf."""
         while self.stack:
             node, idx = self.stack[-1]
@@ -208,7 +208,7 @@ class TreeCursor:
                 # Leaf node that's exhausted
                 self.stack.pop()
 
-    def skip_subtree(self, subtree_hash: str) -> None:
+    def skip_subtree(self, subtree_hash: str):
         """
         Skip over a subtree entirely without visiting its entries.
 

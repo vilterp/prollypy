@@ -29,7 +29,7 @@ from .node import Node
 class Store(Protocol):
     """Protocol for node storage backends."""
 
-    def put_node(self, node_hash: str, node: Node) -> None:
+    def put_node(self, node_hash: str, node: Node):
         """Store a node by its hash."""
         ...
 
@@ -56,7 +56,7 @@ class MemoryStore:
     def __init__(self):
         self.nodes = {}
 
-    def put_node(self, node_hash: str, node: Node) -> None:
+    def put_node(self, node_hash: str, node: Node):
         """Store a node in memory."""
         self.nodes[node_hash] = node
 
@@ -120,7 +120,7 @@ class FileSystemStore:
         node.values = obj['values']
         return node
 
-    def put_node(self, node_hash: str, node: Node) -> None:
+    def put_node(self, node_hash: str, node: Node):
         """Store a node to filesystem."""
         path = self._node_path(node_hash)
         serialized = self._serialize_node(node)
@@ -195,7 +195,7 @@ class CachedFSStore:
         self.cache_misses = 0
         self.cache_evictions = 0
 
-    def put_node(self, node_hash: str, node: Node) -> None:
+    def put_node(self, node_hash: str, node: Node):
         """Store a node to both cache and filesystem."""
         # Check if already in cache - if so, no need to write to filesystem
         if node_hash in self.cache:
@@ -252,7 +252,7 @@ class CachedFSStore:
         self.cache.move_to_end(key)
         return self.cache[key]
 
-    def _cache_put(self, key: str, value: Node) -> None:
+    def _cache_put(self, key: str, value: Node):
         """Add item to cache, evicting LRU item if at capacity."""
         if key in self.cache:
             # Update existing item and move to end

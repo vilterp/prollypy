@@ -32,7 +32,7 @@ class BatchStats:
     __slots__ = ('nodes_created', 'leaves_created', 'internals_created',
                  'nodes_reused', 'subtrees_reused', 'nodes_read')
 
-    def __init__(self) -> None:
+    def __init__(self):
         self.nodes_created: int = 0
         self.leaves_created: int = 0
         self.internals_created: int = 0
@@ -40,7 +40,7 @@ class BatchStats:
         self.subtrees_reused: int = 0
         self.nodes_read: int = 0
 
-    def reset(self) -> None:
+    def reset(self):
         """Reset all counters to zero."""
         self.nodes_created = 0
         self.leaves_created = 0
@@ -83,7 +83,7 @@ class ProllyTree:
         # Operation statistics
         self.stats = BatchStats()
 
-    def reset_stats(self) -> None:
+    def reset_stats(self):
         """Reset operation statistics for a new batch"""
         self.stats.reset()
 
@@ -152,7 +152,7 @@ class ProllyTree:
         """Retrieve node by hash"""
         return self.store.get_node(node_hash)
 
-    def insert_batch(self, mutations: "list[tuple[str, str]]", verbose: bool = True) -> dict[str, int]:
+    def insert_batch(self, mutations: list[tuple[str, str]], verbose: bool = True) -> dict[str, int]:
         """
         Incrementally insert a batch of (key, value) pairs.
         mutations: sorted list of (key, value) tuples
@@ -228,7 +228,7 @@ class ProllyTree:
 
         return stats
 
-    def _rebuild_with_mutations(self, node: Node, mutations: "list[tuple[str, str]]", verbose: bool = True) -> Node:
+    def _rebuild_with_mutations(self, node: Node, mutations: list[tuple[str, str]], verbose: bool = True) -> Node:
         """
         Core incremental rebuild logic.
         Returns: new node (possibly with different structure)
@@ -356,7 +356,7 @@ class ProllyTree:
                 return None
             return self._get_first_key(child)
 
-    def _build_internal_from_children(self, children: "list[Node]", verbose: bool = False) -> Node:
+    def _build_internal_from_children(self, children: list[Node], verbose: bool = False) -> Node:
         """
         Build internal node(s) from a list of children using rolling hash for splits.
 
@@ -475,7 +475,7 @@ class ProllyTree:
                 print(f"  -> Created {len(internal_nodes)} internal nodes, building parent...")
             return self._build_internal_from_children(internal_nodes, verbose)
 
-    def _merge_sorted(self, old_items: "list[tuple[str, str]]", new_items: "list[tuple[str, str]]") -> list[tuple[str, str]]:
+    def _merge_sorted(self, old_items: list[tuple[str, str]], new_items: list[tuple[str, str]]) -> list[tuple[str, str]]:
         """Merge two sorted lists of (key, value) tuples"""
         result = []
         i, j = 0, 0
@@ -497,7 +497,7 @@ class ProllyTree:
         result.extend(new_items[j:])
         return result
 
-    def _build_leaves(self, items: "list[tuple[str, str]]") -> list[Node]:
+    def _build_leaves(self, items: list[tuple[str, str]]) -> list[Node]:
         """
         Build leaf nodes from sorted items using rolling hash for splits.
 
@@ -546,7 +546,7 @@ class ProllyTree:
 
         return leaves if leaves else [Node(is_leaf=True)]
 
-    def _print_tree(self, label: str = "", verbose: bool = False) -> None:
+    def _print_tree(self, label: str = "", verbose: bool = False):
         """
         Print tree structure for debugging.
 
@@ -562,7 +562,7 @@ class ProllyTree:
         root_hash = self._hash_node(self.root)
         self._print_node(self.root, root_hash, prefix="", is_last=True, verbose=verbose)
 
-    def _print_node(self, node: Node, node_hash: Optional[str], prefix: str = "", is_last: bool = True, reused_hashes: "Optional[set[str]]" = None, verbose: bool = False) -> None:
+    def _print_node(self, node: Node, node_hash: Optional[str], prefix: str = "", is_last: bool = True, reused_hashes: Optional[set[str]] = None, verbose: bool = False):
         """
         Recursively print node and its children.
 
@@ -611,7 +611,7 @@ class ProllyTree:
                 child_is_last = (i == len(node.values) - 1)
                 self._print_node(child, child_hash, prefix + extension, child_is_last, reused_hashes, verbose)
 
-    def _print_ops(self) -> None:
+    def _print_ops(self):
         """Print operation statistics"""
         print(f"\n{'='*60}")
         print("OPERATIONS:")

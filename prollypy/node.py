@@ -72,10 +72,10 @@ class Node:
     - len(keys) == len(values)
     """
 
-    def __init__(self, is_leaf: bool = True) -> None:
+    def __init__(self, is_leaf: bool = True):
         self.is_leaf: bool = is_leaf
-        self.keys: "list[str]" = []      # Separator keys (for internal) or actual keys (for leaves)
-        self.values: "list[str]" = []    # Child pointers (for internal) or actual values (for leaves)
+        self.keys: list[str] = []      # Separator keys (for internal) or actual keys (for leaves)
+        self.values: list[str] = []    # Child pointers (for internal) or actual values (for leaves)
 
     def __repr__(self) -> str:
         if self.is_leaf:
@@ -83,7 +83,7 @@ class Node:
         else:
             return f"Internal(keys={self.keys}, children={len(self.values)})"
 
-    def validate(self, store: Optional['Store'] = None, context: str = "") -> None:
+    def validate(self, store: Optional['Store'] = None, context: str = ""):
         """
         Validate this node and its entire subtree.
 
@@ -143,7 +143,7 @@ class Node:
                     raise ValueError("\n".join(error_msg))
             prev_key = key
 
-    def _validate_separators(self, store: 'Store', context_str: str) -> None:
+    def _validate_separators(self, store: 'Store', context_str: str):
         """
         Validate separator invariants for internal nodes.
 
@@ -187,7 +187,7 @@ class Node:
                 return None
             return self._get_first_key(child, store)
 
-    def _collect_keys(self, result: "list[str]", store: Optional['Store']) -> None:
+    def _collect_keys(self, result: list[str], store: Optional['Store']):
         """Recursively collect all keys from this node's subtree in traversal order."""
         if self.is_leaf:
             # For leaf nodes, just add all keys
