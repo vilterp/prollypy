@@ -349,6 +349,9 @@ class Repo:
         empty_tree = ProllyTree(store=block_store)
         tree_root = empty_tree._hash_node(empty_tree.root)
 
+        # Store the empty root node in the block store
+        block_store.put_node(tree_root, empty_tree.root)
+
         # Create initial commit
         initial_commit = Commit(
             tree_root=tree_root,

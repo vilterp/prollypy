@@ -85,7 +85,8 @@ def init_repo(prolly_dir: str = '.prolly', author: Optional[str] = None):
 
     head_commit, ref = repo.get_head()
     print(f"Initialized empty prolly repository in {prolly_dir}")
-    print(f"Initial commit: {head_commit.compute_hash().hex()[:8]}")
+    if head_commit:
+        print(f"Initial commit: {head_commit.compute_hash().hex()[:8]}")
     print(f"Branch: {ref}")
     print(f"Author: {author}")
 
@@ -505,26 +506,45 @@ def commonality_analysis(left_hash: str, right_hash: str, store_spec: str = 'cac
     print_commonality_report(left_hash, right_hash, stats)
 
 
-def get_key(root_hash: str, key: str, store_spec: str = 'cached-file://.prolly',
-            cache_size: Optional[int] = None):
+def get_key_from_repo(key: str, ref: Optional[str] = None, prolly_dir: str = '.prolly',
+                      cache_size: int = 1000, author: Optional[str] = None):
     """
-    Get a value by key from a tree.
+    Get a value by key from a repository ref or HEAD.
 
     Args:
-        root_hash: Root hash of tree to search
         key: Key to look up
-        store_spec: Store specification
+        ref: Ref name or commit hash (default: HEAD)
+        prolly_dir: Repository directory
         cache_size: Cache size for cached stores
+        author: Optional author (unused, for compatibility with _get_repo)
     """
+    repo = _get_repo(prolly_dir, cache_size=cache_size, author=author)
 
-    store = create_store_from_spec(store_spec, cache_size=cache_size)
+    # Determine which commit to read from
+    if ref is None:
+        head_commit, ref_name = repo.get_head()
+        if head_commit is None:
+            print("Error: No commits in repository")
+            return
+        tree_root = head_commit.tree_root
+        ref_display = f"HEAD ({ref_name})"
+    else:
+        commit_hash = repo.resolve_ref(ref)
+        if commit_hash is None:
+            print(f"Error: Ref '{ref}' not found")
+            return
+        commit = repo.get_commit(commit_hash)
+        if commit is None:
+            print(f"Error: Commit not found")
+            return
+        tree_root = commit.tree_root
+        ref_display = ref
 
-    # Load tree with this root
-    tree = ProllyTree(pattern=0.0001, seed=42, store=store)
-    root_hash_bytes = bytes.fromhex(root_hash)
-    root_node = store.get_node(root_hash_bytes)
+    # Load tree
+    tree = ProllyTree(pattern=0.0001, seed=42, store=repo.block_store)
+    root_node = repo.block_store.get_node(tree_root)
     if root_node is None:
-        print(f"Error: Root hash {root_hash} not found in store")
+        print(f"Error: Tree root not found in store")
         return
 
     tree.root = root_node
@@ -533,33 +553,44 @@ def get_key(root_hash: str, key: str, store_spec: str = 'cached-file://.prolly',
     key_bytes = key.encode('utf-8')
     for k, v in tree.items(key_bytes):
         if k == key_bytes:
-            print(v)
+            print(f"{'='*80}")
+            print(f"GET from {ref_display}")
+            print(f"{'='*80}")
+            print(f"Key:   {key}")
+            print(f"Value: {v.decode('utf-8', errors='replace')}")
+            print(f"{'='*80}")
             return
 
     print(f"Key '{key}' not found")
 
 
-def set_key(root_hash: str, key: str, value: str, store_spec: str = 'cached-file://.prolly',
-            cache_size: Optional[int] = None):
+def set_key_in_repo(key: str, value: str, message: Optional[str] = None,
+                    prolly_dir: str = '.prolly', cache_size: int = 1000,
+                    author: Optional[str] = None):
     """
-    Set a key-value pair in a tree, creating a new root.
+    Set a key-value pair in the repository and create a new commit.
 
     Args:
-        root_hash: Root hash of tree to modify
         key: Key to set
         value: Value to set
-        store_spec: Store specification
+        message: Commit message (default: auto-generated)
+        prolly_dir: Repository directory
         cache_size: Cache size for cached stores
+        author: Optional author (default: current user)
     """
+    repo = _get_repo(prolly_dir, cache_size=cache_size, author=author)
 
-    store = create_store_from_spec(store_spec, cache_size=cache_size)
+    # Get current HEAD
+    head_commit, ref_name = repo.get_head()
+    if head_commit is None:
+        print("Error: No commits in repository. Use 'init' first.")
+        return
 
-    # Load tree with this root
-    tree = ProllyTree(pattern=0.0001, seed=42, store=store)
-    root_hash_bytes = bytes.fromhex(root_hash)
-    root_node = store.get_node(root_hash_bytes)
+    # Load current tree
+    tree = ProllyTree(pattern=0.0001, seed=42, store=repo.block_store)
+    root_node = repo.block_store.get_node(head_commit.tree_root)
     if root_node is None:
-        print(f"Error: Root hash {root_hash} not found in store")
+        print(f"Error: Tree root not found in store")
         return
 
     tree.root = root_node
@@ -572,13 +603,21 @@ def set_key(root_hash: str, key: str, value: str, store_spec: str = 'cached-file
     # Get new root hash
     new_root_hash = tree._hash_node(tree.root)
 
+    # Create commit
+    if message is None:
+        message = f"Set {key} = {value}"
+
+    commit = repo.commit(new_root_hash, message, author=author)
+    commit_hash = commit.compute_hash()
+
     print(f"{'='*80}")
     print(f"SET COMPLETE")
     print(f"{'='*80}")
-    print(f"Old root: {root_hash}")
-    print(f"New root: {new_root_hash.hex()}")
     print(f"Key:      {key}")
     print(f"Value:    {value}")
+    print(f"Commit:   {commit_hash.hex()[:8]}")
+    print(f"Message:  {message}")
+    print(f"Branch:   {ref_name}")
     print(f"{'='*80}")
 
 
@@ -844,35 +883,51 @@ independently from the same data may have 0%% commonality due to different struc
                         help='Cache size for cached stores')
 
     # Get subcommand
-    get_parser = subparsers.add_parser('get', help='Get a value by key',
+    get_parser = subparsers.add_parser('get', help='Get a value by key from repository',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
-  # Get a key from a tree
-  python cli.py get 1395402e5fd71b2d /d/buses/100001 --store cached-file://.prolly
+  # Get a key from HEAD
+  python cli.py get mykey
+
+  # Get a key from a specific ref
+  python cli.py get mykey --ref main
+
+  # Get a key from a specific commit
+  python cli.py get /d/users/1 --ref abc123
         ''')
-    get_parser.add_argument('root_hash', help='Root hash of tree')
     get_parser.add_argument('key', help='Key to retrieve')
-    get_parser.add_argument('--store', default='cached-file://.prolly',
-                        help='Store spec (default: cached-file://.prolly)')
-    get_parser.add_argument('--cache-size', type=int, default=None,
-                        help='Cache size for cached stores')
+    get_parser.add_argument('--ref', default=None,
+                        help='Ref name or commit hash (default: HEAD)')
+    get_parser.add_argument('--dir', default='.prolly',
+                        help='Repository directory (default: .prolly)')
+    get_parser.add_argument('--cache-size', type=int, default=1000,
+                        help='Cache size for cached stores (default: 1000)')
 
     # Set subcommand
-    set_parser = subparsers.add_parser('set', help='Set a key-value pair (creates new root)',
+    set_parser = subparsers.add_parser('set', help='Set a key-value pair and commit',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
-  # Set a key in a tree
-  python cli.py set 1395402e5fd71b2d mykey myvalue --store cached-file://.prolly
+  # Set a key on HEAD
+  python cli.py set mykey myvalue
+
+  # Set with custom commit message
+  python cli.py set mykey myvalue --message "Update mykey value"
+
+  # Set using custom author
+  python cli.py set mykey myvalue --author "Alice <alice@example.com>"
         ''')
-    set_parser.add_argument('root_hash', help='Root hash of tree to modify')
     set_parser.add_argument('key', help='Key to set')
     set_parser.add_argument('value', help='Value to set')
-    set_parser.add_argument('--store', default='cached-file://.prolly',
-                        help='Store spec (default: cached-file://.prolly)')
-    set_parser.add_argument('--cache-size', type=int, default=None,
-                        help='Cache size for cached stores')
+    set_parser.add_argument('--message', default=None,
+                        help='Commit message (default: auto-generated)')
+    set_parser.add_argument('--dir', default='.prolly',
+                        help='Repository directory (default: .prolly)')
+    set_parser.add_argument('--cache-size', type=int, default=1000,
+                        help='Cache size for cached stores (default: 1000)')
+    set_parser.add_argument('--author', default=None,
+                        help='Commit author (default: current user)')
 
     # GC subcommand
     gc_parser = subparsers.add_parser('gc', help='Garbage collect unreachable nodes from repository',
@@ -954,19 +1009,20 @@ to preview what will be removed before actually removing it.
             cache_size=args.cache_size
         )
     elif args.command == 'get':
-        get_key(
-            root_hash=args.root_hash,
+        get_key_from_repo(
             key=args.key,
-            store_spec=args.store,
+            ref=args.ref,
+            prolly_dir=args.dir,
             cache_size=args.cache_size
         )
     elif args.command == 'set':
-        set_key(
-            root_hash=args.root_hash,
+        set_key_in_repo(
             key=args.key,
             value=args.value,
-            store_spec=args.store,
-            cache_size=args.cache_size
+            message=args.message,
+            prolly_dir=args.dir,
+            cache_size=args.cache_size,
+            author=args.author
         )
     elif args.command == 'gc':
         gc_repo(
