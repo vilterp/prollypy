@@ -77,8 +77,8 @@ class DB:
         table = Table(name, columns, types, primary_key)
 
         # Store schema
-        schema_key = f"/s/{name}"
-        schema_value = json.dumps(table.to_dict(), separators=(',', ':'))
+        schema_key = f"/s/{name}".encode('utf-8')
+        schema_value = json.dumps(table.to_dict(), separators=(',', ':')).encode('utf-8')
         self.tree.insert_batch([(schema_key, schema_value)], verbose=False)
 
         return table
@@ -93,10 +93,10 @@ class DB:
         Returns:
             Table instance or None if not found
         """
-        schema_key = f"/s/{name}"
+        schema_key = f"/s/{name}".encode('utf-8')
         for key, value in self.tree.items(schema_key):
             if key == schema_key:
-                return Table.from_dict(name, json.loads(value))
+                return Table.from_dict(name, json.loads(value.decode('utf-8')))
         return None
 
     def list_tables(self) -> List[str]:
@@ -107,8 +107,8 @@ class DB:
             List of table names
         """
         tables = []
-        for key, _ in self.tree.items('/s/'):
-            table_name = key[3:]  # Remove '/s/' prefix
+        for key, _ in self.tree.items(b'/s/'):
+            table_name = key[3:].decode('utf-8')  # Remove '/s/' prefix and decode
             tables.append(table_name)
         return tables
 
@@ -144,8 +144,8 @@ class DB:
             pk_value = "/".join(pk_parts)
 
             # Create key-value pair
-            key = f"/d/{table_name}/{pk_value}"
-            value = json.dumps(list(row), separators=(',', ':'))
+            key = f"/d/{table_name}/{pk_value}".encode('utf-8')
+            value = json.dumps(list(row), separators=(',', ':')).encode('utf-8')
             batch.append((key, value))
 
             # Insert batch when full
@@ -177,10 +177,10 @@ class DB:
             Tuples of (key, row_data) where row_data is dict if reconstruct=True, else list
         """
         table = self.get_table(table_name) if reconstruct else None
-        data_prefix = f"/d/{table_name}/{prefix}"
+        data_prefix = f"/d/{table_name}/{prefix}".encode('utf-8')
 
         for key, value in self.tree.items(data_prefix):
-            row_values = json.loads(value)
+            row_values = json.loads(value.decode('utf-8'))
 
             if reconstruct and table:
                 # Reconstruct as dictionary
@@ -190,12 +190,12 @@ class DB:
                 # Return raw array
                 yield (key, row_values)
 
-    def get_root_hash(self) -> str:
+    def get_root_hash(self) -> bytes:
         """
         Get the current root hash of the tree.
 
         Returns:
-            Root hash as hex string
+            Root hash as bytes
         """
         return self.tree._hash_node(self.tree.root)
 

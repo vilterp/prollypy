@@ -328,8 +328,7 @@ class ProllyTree:
             current_internal.values.append(child_hash)
 
             # Update rolling hash with the child hash
-            hash_bytes = str(child_hash).encode('utf-8')
-            roll_hash = self._rolling_hash(roll_hash, hash_bytes)
+            roll_hash = self._rolling_hash(roll_hash, child_hash)
 
             # Add separator key (first key of next child)
             if i < len(children) - 1:
@@ -340,8 +339,7 @@ class ProllyTree:
                     current_internal.keys.append(separator)
 
                     # Update rolling hash with separator key
-                    sep_bytes = str(separator).encode('utf-8')
-                    roll_hash = self._rolling_hash(roll_hash, sep_bytes)
+                    roll_hash = self._rolling_hash(roll_hash, separator)
 
                     # Check if we should split here using rolling hash
                     # Require:
@@ -447,10 +445,8 @@ class ProllyTree:
             current_values.append(value)
 
             # Update rolling hash with the key and value bytes
-            key_bytes = str(key).encode('utf-8')
-            value_bytes = str(value).encode('utf-8')
-            roll_hash = self._rolling_hash(roll_hash, key_bytes)
-            roll_hash = self._rolling_hash(roll_hash, value_bytes)
+            roll_hash = self._rolling_hash(roll_hash, key)
+            roll_hash = self._rolling_hash(roll_hash, value)
 
             # Split if: (1) have minimum entries AND hash below pattern OR (2) last item
             has_min = len(current_keys) >= MIN_NODE_SIZE

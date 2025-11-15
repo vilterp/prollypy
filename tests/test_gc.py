@@ -23,7 +23,7 @@ def store():
 def test_single_tree_no_garbage(store):
     """Test that a single tree has no garbage."""
     tree = ProllyTree(pattern=0.0001, seed=42, store=store)
-    tree.insert_batch([(i, f'v{i}') for i in range(100)], verbose=False)
+    tree.insert_batch([(str(i).encode(), f'v{i}'.encode()) for i in range(100)], verbose=False)
 
     root_hash = tree._hash_node(tree.root)
 
@@ -37,13 +37,13 @@ def test_two_trees_sharing_nodes(store):
     """Test two trees that share some nodes."""
     # Create first tree
     tree1 = ProllyTree(pattern=0.0001, seed=42, store=store)
-    tree1.insert_batch([(i, f'v{i}') for i in range(100)], verbose=False)
+    tree1.insert_batch([(str(i).encode(), f'v{i}'.encode()) for i in range(100)], verbose=False)
     hash1 = tree1._hash_node(tree1.root)
 
     # Create second tree by modifying first tree (should share most nodes)
     tree2 = ProllyTree(pattern=0.0001, seed=42, store=store)
     tree2.root = tree1.root
-    tree2.insert_batch([(0, 'modified')], verbose=False)
+    tree2.insert_batch([(b'0', b'modified')], verbose=False)
     hash2 = tree2._hash_node(tree2.root)
 
     # Both trees should have no garbage
@@ -59,14 +59,14 @@ def test_old_tree_becomes_garbage(store):
     """Test that old tree versions become garbage when not kept."""
     # Create initial tree
     tree1 = ProllyTree(pattern=0.0001, seed=42, store=store)
-    tree1.insert_batch([(i, f'v{i}') for i in range(50)], verbose=False)
+    tree1.insert_batch([(str(i).encode(), f'v{i}'.encode()) for i in range(50)], verbose=False)
     hash1 = tree1._hash_node(tree1.root)
     nodes_after_tree1 = store.count_nodes()
 
     # Create modified tree
     tree2 = ProllyTree(pattern=0.0001, seed=42, store=store)
     tree2.root = tree1.root
-    tree2.insert_batch([(i, f'modified{i}') for i in range(10)], verbose=False)
+    tree2.insert_batch([(str(i).encode(), f'modified{i}'.encode()) for i in range(10)], verbose=False)
     hash2 = tree2._hash_node(tree2.root)
     nodes_after_tree2 = store.count_nodes()
 
@@ -85,7 +85,7 @@ def test_old_tree_becomes_garbage(store):
 def test_reachable_nodes_traversal(store):
     """Test that find_reachable_nodes correctly traverses tree."""
     tree = ProllyTree(pattern=0.0001, seed=42, store=store)
-    tree.insert_batch([(i, f'v{i}') for i in range(100)], verbose=False)
+    tree.insert_batch([(str(i).encode(), f'v{i}'.encode()) for i in range(100)], verbose=False)
 
     root_hash = tree._hash_node(tree.root)
 
@@ -113,7 +113,7 @@ def test_gc_stats_empty_store(store):
 def test_gc_stats_single_tree(store):
     """Test GC stats on single tree."""
     tree = ProllyTree(pattern=0.0001, seed=42, store=store)
-    tree.insert_batch([(i, f'v{i}') for i in range(100)], verbose=False)
+    tree.insert_batch([(str(i).encode(), f'v{i}'.encode()) for i in range(100)], verbose=False)
     root_hash = tree._hash_node(tree.root)
 
     stats = collect_garbage_stats(store, {root_hash})
@@ -129,13 +129,13 @@ def test_gc_stats_with_garbage(store):
     """Test GC stats when there is garbage."""
     # Create tree1
     tree1 = ProllyTree(pattern=0.0001, seed=42, store=store)
-    tree1.insert_batch([(i, f'v{i}') for i in range(50)], verbose=False)
+    tree1.insert_batch([(str(i).encode(), f'v{i}'.encode()) for i in range(50)], verbose=False)
     hash1 = tree1._hash_node(tree1.root)
 
     # Create tree2 (modified version)
     tree2 = ProllyTree(pattern=0.0001, seed=42, store=store)
     tree2.root = tree1.root
-    tree2.insert_batch([(i, f'modified{i}') for i in range(10)], verbose=False)
+    tree2.insert_batch([(str(i).encode(), f'modified{i}'.encode()) for i in range(10)], verbose=False)
     hash2 = tree2._hash_node(tree2.root)
 
     # Get stats keeping only tree2
@@ -153,12 +153,12 @@ def test_garbage_collect_dry_run(store):
     """Test garbage collection dry run doesn't remove anything."""
     # Create and modify tree
     tree1 = ProllyTree(pattern=0.0001, seed=42, store=store)
-    tree1.insert_batch([(i, f'v{i}') for i in range(50)], verbose=False)
+    tree1.insert_batch([(str(i).encode(), f'v{i}'.encode()) for i in range(50)], verbose=False)
     hash1 = tree1._hash_node(tree1.root)
 
     tree2 = ProllyTree(pattern=0.0001, seed=42, store=store)
     tree2.root = tree1.root
-    tree2.insert_batch([(i, f'modified{i}') for i in range(10)], verbose=False)
+    tree2.insert_batch([(str(i).encode(), f'modified{i}'.encode()) for i in range(10)], verbose=False)
     hash2 = tree2._hash_node(tree2.root)
 
     initial_count = store.count_nodes()
@@ -175,12 +175,12 @@ def test_garbage_collect_live(store):
     """Test actual garbage collection removes nodes."""
     # Create and modify tree
     tree1 = ProllyTree(pattern=0.0001, seed=42, store=store)
-    tree1.insert_batch([(i, f'v{i}') for i in range(50)], verbose=False)
+    tree1.insert_batch([(str(i).encode(), f'v{i}'.encode()) for i in range(50)], verbose=False)
     hash1 = tree1._hash_node(tree1.root)
 
     tree2 = ProllyTree(pattern=0.0001, seed=42, store=store)
     tree2.root = tree1.root
-    tree2.insert_batch([(i, f'modified{i}') for i in range(10)], verbose=False)
+    tree2.insert_batch([(str(i).encode(), f'modified{i}'.encode()) for i in range(10)], verbose=False)
     hash2 = tree2._hash_node(tree2.root)
 
     initial_count = store.count_nodes()
@@ -203,7 +203,7 @@ def test_multiple_roots_preserved(store):
 
     for i in range(3):
         tree = ProllyTree(pattern=0.0001, seed=42, store=store)
-        tree.insert_batch([(j + i*100, f'tree{i}_v{j}') for j in range(20)], verbose=False)
+        tree.insert_batch([(str(j + i*100).encode(), f'tree{i}_v{j}'.encode()) for j in range(20)], verbose=False)
         hash_val = tree._hash_node(tree.root)
         trees.append(tree)
         hashes.append(hash_val)
@@ -219,7 +219,7 @@ def test_multiple_roots_preserved(store):
 def test_empty_root_set(store):
     """Test GC with empty root set (everything is garbage)."""
     tree = ProllyTree(pattern=0.0001, seed=42, store=store)
-    tree.insert_batch([(i, f'v{i}') for i in range(50)], verbose=False)
+    tree.insert_batch([(str(i).encode(), f'v{i}'.encode()) for i in range(50)], verbose=False)
 
     total_nodes = store.count_nodes()
 
@@ -235,7 +235,7 @@ def test_empty_root_set(store):
 def test_nonexistent_root_hash(store):
     """Test GC with nonexistent root hash."""
     tree = ProllyTree(pattern=0.0001, seed=42, store=store)
-    tree.insert_batch([(i, f'v{i}') for i in range(50)], verbose=False)
+    tree.insert_batch([(str(i).encode(), f'v{i}'.encode()) for i in range(50)], verbose=False)
 
     total_nodes = store.count_nodes()
 
@@ -252,13 +252,13 @@ def test_remove_garbage_function(store):
     """Test the remove_garbage function directly."""
     # Create tree
     tree = ProllyTree(pattern=0.0001, seed=42, store=store)
-    tree.insert_batch([(i, f'v{i}') for i in range(50)], verbose=False)
+    tree.insert_batch([(str(i).encode(), f'v{i}'.encode()) for i in range(50)], verbose=False)
     hash1 = tree._hash_node(tree.root)
 
     # Modify tree
     tree2 = ProllyTree(pattern=0.0001, seed=42, store=store)
     tree2.root = tree.root
-    tree2.insert_batch([(i, f'modified{i}') for i in range(10)], verbose=False)
+    tree2.insert_batch([(str(i).encode(), f'modified{i}'.encode()) for i in range(10)], verbose=False)
     hash2 = tree2._hash_node(tree2.root)
 
     # Find garbage
@@ -276,14 +276,14 @@ def test_gc_preserves_reachable_data(store):
     """Test that GC preserves all reachable data."""
     # Create tree
     tree = ProllyTree(pattern=0.0001, seed=42, store=store)
-    data = [(i, f'value{i}') for i in range(100)]
+    data = [(str(i).encode(), f'value{i}'.encode()) for i in range(100)]
     tree.insert_batch(data, verbose=False)
     hash1 = tree._hash_node(tree.root)
 
     # Modify tree
     tree2 = ProllyTree(pattern=0.0001, seed=42, store=store)
     tree2.root = tree.root
-    tree2.insert_batch([(50, 'modified')], verbose=False)
+    tree2.insert_batch([(b'50', b'modified')], verbose=False)
     hash2 = tree2._hash_node(tree2.root)
 
     # GC keeping only tree2
@@ -305,12 +305,12 @@ def test_gc_preserves_reachable_data(store):
 def test_gc_stats_repr(store):
     """Test GCStats repr formatting."""
     tree = ProllyTree(pattern=0.0001, seed=42, store=store)
-    tree.insert_batch([(i, f'v{i}') for i in range(50)], verbose=False)
+    tree.insert_batch([(str(i).encode(), f'v{i}'.encode()) for i in range(50)], verbose=False)
     hash1 = tree._hash_node(tree.root)
 
     tree2 = ProllyTree(pattern=0.0001, seed=42, store=store)
     tree2.root = tree.root
-    tree2.insert_batch([(i, f'modified{i}') for i in range(10)], verbose=False)
+    tree2.insert_batch([(str(i).encode(), f'modified{i}'.encode()) for i in range(10)], verbose=False)
     hash2 = tree2._hash_node(tree2.root)
 
     stats = collect_garbage_stats(store, {hash2})

@@ -27,9 +27,9 @@ def test_insertion_order_independence_simple(store):
     in any order and should produce the same final tree structure.
     """
     # Split data into 3 batches
-    batch1 = [(1, "a"), (2, "b")]
-    batch2 = [(3, "c"), (4, "d")]
-    batch3 = [(5, "e"), (6, "f")]
+    batch1 = [(b"1", b"a"), (b"2", b"b")]
+    batch2 = [(b"3", b"c"), (b"4", b"d")]
+    batch3 = [(b"5", b"e"), (b"6", b"f")]
 
     # Insert batches in order: 1, 2, 3
     tree1 = ProllyTree(pattern=0.0001, seed=42, store=store)
@@ -62,13 +62,13 @@ def test_insertion_order_independence_larger(store):
     Insert the same data via different batch orderings.
     """
     # Create 100 key-value pairs
-    keys = [(i, f"value_{i}") for i in range(100)]
+    keys = [(str(i).encode(), f"value_{i}".encode()) for i in range(100)]
 
     # Split into 4 batches
-    batch1 = [(i, f"value_{i}") for i in range(0, 25)]
-    batch2 = [(i, f"value_{i}") for i in range(25, 50)]
-    batch3 = [(i, f"value_{i}") for i in range(50, 75)]
-    batch4 = [(i, f"value_{i}") for i in range(75, 100)]
+    batch1 = [(str(i).encode(), f"value_{i}".encode()) for i in range(0, 25)]
+    batch2 = [(str(i).encode(), f"value_{i}".encode()) for i in range(25, 50)]
+    batch3 = [(str(i).encode(), f"value_{i}".encode()) for i in range(50, 75)]
+    batch4 = [(str(i).encode(), f"value_{i}".encode()) for i in range(75, 100)]
 
     # Insert batches in order: 1, 2, 3, 4
     tree1 = ProllyTree(pattern=0.0001, seed=42, store=store)
@@ -99,7 +99,7 @@ def test_insertion_order_independence_larger(store):
 
 def test_insertion_order_independence_multiple_batches(store):
     """Test that inserting in multiple batches produces the same result as single batch."""
-    all_keys = [(i, f"v{i}") for i in range(50)]
+    all_keys = [(str(i).encode(), f"v{i}".encode()) for i in range(50)]
 
     # Insert all at once
     tree1 = ProllyTree(pattern=0.0001, seed=42, store=store)
@@ -108,17 +108,17 @@ def test_insertion_order_independence_multiple_batches(store):
 
     # Insert in two batches
     tree2 = ProllyTree(pattern=0.0001, seed=42, store=store)
-    batch1 = [(i, f"v{i}") for i in range(25)]
-    batch2 = [(i, f"v{i}") for i in range(25, 50)]
+    batch1 = [(str(i).encode(), f"v{i}".encode()) for i in range(25)]
+    batch2 = [(str(i).encode(), f"v{i}".encode()) for i in range(25, 50)]
     tree2.insert_batch(sorted(batch1), verbose=False)
     tree2.insert_batch(sorted(batch2), verbose=False)
     hash2 = tree2._hash_node(tree2.root)
 
     # Insert in three batches with different split points
     tree3 = ProllyTree(pattern=0.0001, seed=42, store=store)
-    batch_a = [(i, f"v{i}") for i in range(10)]
-    batch_b = [(i, f"v{i}") for i in range(10, 35)]
-    batch_c = [(i, f"v{i}") for i in range(35, 50)]
+    batch_a = [(str(i).encode(), f"v{i}".encode()) for i in range(10)]
+    batch_b = [(str(i).encode(), f"v{i}".encode()) for i in range(10, 35)]
+    batch_c = [(str(i).encode(), f"v{i}".encode()) for i in range(35, 50)]
     tree3.insert_batch(sorted(batch_a), verbose=False)
     tree3.insert_batch(sorted(batch_b), verbose=False)
     tree3.insert_batch(sorted(batch_c), verbose=False)
@@ -130,10 +130,10 @@ def test_insertion_order_independence_multiple_batches(store):
 def test_insertion_order_independence_with_updates(store):
     """Test that updates produce the same result regardless of order."""
     # Initial set of keys
-    initial = [(i, f"v{i}") for i in range(20)]
+    initial = [(str(i).encode(), f"v{i}".encode()) for i in range(20)]
 
     # Updates to apply
-    updates = [(5, "UPDATED_5"), (10, "UPDATED_10"), (15, "UPDATED_15")]
+    updates = [(b"5", b"UPDATED_5"), (b"10", b"UPDATED_10"), (b"15", b"UPDATED_15")]
 
     # Approach 1: Insert all initial, then apply updates
     tree1 = ProllyTree(pattern=0.0001, seed=42, store=store)
@@ -155,11 +155,11 @@ def test_insertion_order_independence_with_updates(store):
 def test_insertion_order_independence_string_keys(store):
     """Test insertion order independence with string keys."""
     keys = [
-        ("/d/table1/row1", "data1"),
-        ("/d/table1/row2", "data2"),
-        ("/d/table2/row1", "data3"),
-        ("/s/schema1", "schema_data"),
-        ("/s/schema2", "schema_data2"),
+        (b"/d/table1/row1", b"data1"),
+        (b"/d/table1/row2", b"data2"),
+        (b"/d/table2/row1", b"data3"),
+        (b"/s/schema1", b"schema_data"),
+        (b"/s/schema2", b"schema_data2"),
     ]
 
     # Insert in sorted order
@@ -183,7 +183,7 @@ def test_tree_structure_identical_not_just_hash(store):
     This test checks the actual tree structure (node keys and values) to ensure
     we're getting true structural identity, not accidental hash matches.
     """
-    keys = [(i, f"val{i}") for i in range(30)]
+    keys = [(str(i).encode(), f"val{i}".encode()) for i in range(30)]
 
     # Build tree 1
     tree1 = ProllyTree(pattern=0.0001, seed=42, store=store)
@@ -235,7 +235,7 @@ def test_insertion_order_independence_different_seeds_fail():
     """
     store = MemoryStore()
     # Use more keys and higher pattern to ensure splits happen
-    keys = [(i, f"value_{i}") for i in range(500)]
+    keys = [(str(i).encode(), f"value_{i}".encode()) for i in range(500)]
 
     # Build with seed 42 - use higher pattern to trigger splits
     tree1 = ProllyTree(pattern=0.25, seed=42, store=store)
@@ -253,7 +253,7 @@ def test_insertion_order_independence_different_seeds_fail():
 
 def test_incremental_insertion_order_independence(store):
     """Test that inserting keys one by one in different orders produces same result."""
-    keys = [(1, "a"), (2, "b"), (3, "c"), (4, "d"), (5, "e")]
+    keys = [(b"1", b"a"), (b"2", b"b"), (b"3", b"c"), (b"4", b"d"), (b"5", b"e")]
 
     # Insert in ascending order
     tree1 = ProllyTree(pattern=0.0001, seed=42, store=store)

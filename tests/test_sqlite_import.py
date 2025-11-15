@@ -155,7 +155,7 @@ def test_import_users_data_integrity(imported_db):
 
     # Check first user
     key, user = rows[0]
-    assert key == "/d/users/1"
+    assert key == b"/d/users/1"
     assert user["id"] == 1
     assert user["name"] == "Alice"
     assert user["email"] == "alice@example.com"
@@ -163,7 +163,7 @@ def test_import_users_data_integrity(imported_db):
 
     # Check last user
     key, user = rows[4]
-    assert key == "/d/users/5"
+    assert key == b"/d/users/5"
     assert user["id"] == 5
     assert user["name"] == "Eve"
     assert user["email"] == "eve@example.com"
@@ -181,7 +181,7 @@ def test_import_orders_data_integrity(imported_db):
 
     # Check first order (compound primary key)
     key, order = rows[0]
-    assert key == "/d/orders/1/100"
+    assert key == b"/d/orders/1/100"
     assert order["customer_id"] == 1
     assert order["order_id"] == 100
     assert order["product"] == "Laptop"
@@ -189,7 +189,7 @@ def test_import_orders_data_integrity(imported_db):
 
     # Check last order
     key, order = rows[4]
-    assert key == "/d/orders/3/100"
+    assert key == b"/d/orders/3/100"
     assert order["customer_id"] == 3
     assert order["order_id"] == 100
     assert order["product"] == "Headphones"
@@ -228,7 +228,7 @@ def test_import_root_hash(imported_db):
     """Test that root hash is generated."""
     root_hash = imported_db.get_root_hash()
 
-    assert isinstance(root_hash, str)
+    assert isinstance(root_hash, bytes)
     assert len(root_hash) > 0
 
 
