@@ -10,7 +10,7 @@ import hashlib
 import json
 import sqlite3
 from dataclasses import dataclass
-from typing import Protocol, Optional, List, Dict, Tuple
+from typing import Protocol, Optional, List, Dict, Tuple, Iterator
 from .store import BlockStore
 
 
@@ -82,6 +82,14 @@ class CommitGraphStore(Protocol):
         """List all references and their commit hashes."""
         ...
 
+    def set_head(self, ref_name: str) -> None:
+        """Set HEAD to point to a branch name."""
+        ...
+
+    def get_head(self) -> Optional[str]:
+        """Get the branch name that HEAD points to. Returns None if not set."""
+        ...
+
 
 class MemoryCommitGraphStore:
     """In-memory implementation of CommitGraphStore."""
@@ -89,6 +97,7 @@ class MemoryCommitGraphStore:
     def __init__(self):
         self.commits: Dict[bytes, Commit] = {}
         self.refs: Dict[str, bytes] = {}
+        self.head: Optional[str] = None
 
     def put_commit(self, commit_hash: bytes, commit: Commit) -> None:
         """Store a commit in memory."""
@@ -114,6 +123,14 @@ class MemoryCommitGraphStore:
     def list_refs(self) -> Dict[str, bytes]:
         """List all references."""
         return dict(self.refs)
+
+    def set_head(self, ref_name: str) -> None:
+        """Set HEAD to point to a branch name."""
+        self.head = ref_name
+
+    def get_head(self) -> Optional[str]:
+        """Get the branch name that HEAD points to."""
+        return self.head
 
 
 class SqliteCommitGraphStore:
@@ -162,6 +179,14 @@ class SqliteCommitGraphStore:
                 name TEXT PRIMARY KEY,
                 commit_hash BLOB NOT NULL,
                 FOREIGN KEY (commit_hash) REFERENCES commits(hash)
+            )
+        """)
+
+        # Metadata table for HEAD and other repo settings
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
             )
         """)
 
@@ -258,6 +283,22 @@ class SqliteCommitGraphStore:
         cursor.execute("SELECT name, commit_hash FROM refs")
         return {row[0]: row[1] for row in cursor.fetchall()}
 
+    def set_head(self, ref_name: str) -> None:
+        """Set HEAD to point to a branch name."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO metadata (key, value)
+            VALUES ('HEAD', ?)
+        """, (ref_name,))
+        self.conn.commit()
+
+    def get_head(self) -> Optional[str]:
+        """Get the branch name that HEAD points to."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT value FROM metadata WHERE key = 'HEAD'")
+        row = cursor.fetchone()
+        return row[0] if row else None
+
     def close(self):
         """Close the database connection."""
         self.conn.close()
@@ -283,7 +324,47 @@ class Repo:
         self.block_store = block_store
         self.commit_graph_store = commit_graph_store
         self.default_author = default_author
-        self._current_ref = "main"  # Default branch
+
+    @classmethod
+    def init_empty(cls, block_store: BlockStore, commit_graph_store: CommitGraphStore,
+                   default_author: str = "unknown") -> 'Repo':
+        """
+        Initialize a new empty repository with an initial commit.
+
+        Args:
+            block_store: Storage for tree nodes
+            commit_graph_store: Storage for commits and refs
+            default_author: Default author for commits
+
+        Returns:
+            A new Repo instance
+        """
+        from .tree import ProllyTree
+        from .node import Node
+
+        repo = cls(block_store, commit_graph_store, default_author)
+
+        # Create empty tree
+        empty_tree = ProllyTree(store=block_store)
+        tree_root = empty_tree._hash_node(empty_tree.root)
+
+        # Create initial commit
+        initial_commit = Commit(
+            tree_root=tree_root,
+            parents=[],
+            message="Initial commit",
+            timestamp=time.time(),
+            author=default_author
+        )
+
+        commit_hash = initial_commit.compute_hash()
+        commit_graph_store.put_commit(commit_hash, initial_commit)
+
+        # Create main branch and set HEAD
+        commit_graph_store.set_ref("main", commit_hash)
+        commit_graph_store.set_head("main")
+
+        return repo
 
     def get_head(self) -> Tuple[Optional[Commit], str]:
         """
@@ -292,12 +373,18 @@ class Repo:
         Returns:
             Tuple of (commit, ref_name). Commit may be None if ref doesn't exist yet.
         """
-        commit_hash = self.commit_graph_store.get_ref(self._current_ref)
+        current_ref = self.commit_graph_store.get_head()
+        if current_ref is None:
+            # HEAD not set, default to "main" and set it
+            current_ref = "main"
+            self.commit_graph_store.set_head(current_ref)
+
+        commit_hash = self.commit_graph_store.get_ref(current_ref)
         if commit_hash is None:
-            return (None, self._current_ref)
+            return (None, current_ref)
 
         commit = self.commit_graph_store.get_commit(commit_hash)
-        return (commit, self._current_ref)
+        return (commit, current_ref)
 
     def create_branch(self, name: str, from_commit: Optional[bytes] = None) -> None:
         """
@@ -341,7 +428,7 @@ class Repo:
         if self.commit_graph_store.get_ref(ref_name) is None:
             raise ValueError(f"Ref '{ref_name}' does not exist")
 
-        self._current_ref = ref_name
+        self.commit_graph_store.set_head(ref_name)
 
     def commit(self, new_head_tree: bytes, message: str, author: Optional[str] = None) -> Commit:
         """
@@ -384,3 +471,81 @@ class Repo:
     def list_branches(self) -> Dict[str, bytes]:
         """List all branches and their commit hashes."""
         return self.commit_graph_store.list_refs()
+
+    def resolve_ref(self, ref: str) -> Optional[bytes]:
+        """
+        Resolve a ref name or commit hash to a commit hash.
+
+        Args:
+            ref: Either a branch name or a commit hash (as hex string)
+
+        Returns:
+            Commit hash bytes, or None if not found
+        """
+        # Try as a ref first
+        commit_hash = self.commit_graph_store.get_ref(ref)
+        if commit_hash is not None:
+            return commit_hash
+
+        # Try as a commit hash
+        try:
+            commit_hash = bytes.fromhex(ref)
+            # Verify it exists
+            if self.commit_graph_store.get_commit(commit_hash) is not None:
+                return commit_hash
+        except ValueError:
+            pass
+
+        return None
+
+    def log(self, start_ref: Optional[str] = None, max_count: Optional[int] = None) -> Iterator[Tuple[bytes, Commit]]:
+        """
+        Walk the commit graph backwards from a starting point, yielding commits.
+
+        Args:
+            start_ref: Ref or commit hash to start from. If None, uses HEAD.
+            max_count: Maximum number of commits to return. If None, returns all.
+
+        Yields:
+            Tuples of (commit_hash, commit) in reverse chronological order
+        """
+        # Determine starting commit
+        if start_ref is None:
+            head_commit, _ = self.get_head()
+            if head_commit is None:
+                return
+            current_hash = head_commit.compute_hash()
+        else:
+            current_hash = self.resolve_ref(start_ref)
+            if current_hash is None:
+                return
+
+        # Walk backwards through commit history
+        visited = set()
+        count = 0
+
+        # Use a queue for BFS (though linear history will be simple)
+        queue = [current_hash]
+
+        while queue:
+            if max_count is not None and count >= max_count:
+                break
+
+            commit_hash = queue.pop(0)
+
+            # Skip if already visited
+            if commit_hash in visited:
+                continue
+
+            visited.add(commit_hash)
+
+            # Get the commit
+            commit = self.commit_graph_store.get_commit(commit_hash)
+            if commit is None:
+                continue
+
+            yield (commit_hash, commit)
+            count += 1
+
+            # Add parents to queue
+            queue.extend(commit.parents)

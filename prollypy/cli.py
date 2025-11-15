@@ -7,15 +7,111 @@ Provides commands for importing SQLite databases and dumping data.
 import argparse
 import sqlite3
 import time
+import os
+import getpass
+from datetime import datetime
 from typing import Optional, List
 
 from .db import DB
-from .store import create_store_from_spec, CachedFSBlockStore
+from .store import create_store_from_spec, CachedFSBlockStore, BlockStore
 from .diff import Differ, Added, Deleted, Modified
 from .sqlite_import import import_sqlite_database, import_sqlite_table, validate_tree_sorted
 from .commonality import compute_commonality, print_commonality_report
 from .store_gc import garbage_collect, find_garbage_nodes, GCStats
 from .tree import ProllyTree
+from .repo import Repo, SqliteCommitGraphStore
+
+
+def _get_author() -> str:
+    """Get the current OS user as the author."""
+    try:
+        return getpass.getuser()
+    except Exception:
+        return "unknown"
+
+
+def _get_repo(prolly_dir: str = '.prolly', cache_size: int = 1000, author: Optional[str] = None) -> Repo:
+    """
+    Open a repository from a .prolly directory.
+
+    Args:
+        prolly_dir: Path to .prolly directory
+        cache_size: Cache size for block store
+        author: Default author for commits (defaults to current user)
+
+    Returns:
+        Repo instance
+
+    Raises:
+        FileNotFoundError: If the .prolly directory doesn't exist
+    """
+    if not os.path.exists(prolly_dir):
+        raise FileNotFoundError(f"Repository not found at {prolly_dir}. Run 'prolly init' first.")
+
+    # Create stores
+    blocks_dir = os.path.join(prolly_dir, 'blocks')
+    commits_db = os.path.join(prolly_dir, 'commits.db')
+
+    block_store = CachedFSBlockStore(blocks_dir, cache_size=cache_size)
+    commit_graph_store = SqliteCommitGraphStore(commits_db)
+
+    return Repo(block_store, commit_graph_store, default_author=author or _get_author())
+
+
+def init_repo(prolly_dir: str = '.prolly', author: Optional[str] = None):
+    """
+    Initialize a new prolly repository.
+
+    Args:
+        prolly_dir: Path to .prolly directory
+        author: Default author for initial commit (defaults to current user)
+    """
+    if os.path.exists(prolly_dir):
+        print(f"Error: Repository already exists at {prolly_dir}")
+        return
+
+    # Create directory structure
+    os.makedirs(prolly_dir, exist_ok=True)
+    blocks_dir = os.path.join(prolly_dir, 'blocks')
+    commits_db = os.path.join(prolly_dir, 'commits.db')
+
+    # Create stores
+    block_store = CachedFSBlockStore(blocks_dir, cache_size=1000)
+    commit_graph_store = SqliteCommitGraphStore(commits_db)
+
+    # Initialize empty repo with initial commit
+    author = author or _get_author()
+    repo = Repo.init_empty(block_store, commit_graph_store, default_author=author)
+
+    head_commit, ref = repo.get_head()
+    print(f"Initialized empty prolly repository in {prolly_dir}")
+    print(f"Initial commit: {head_commit.compute_hash().hex()[:8]}")
+    print(f"Branch: {ref}")
+    print(f"Author: {author}")
+
+
+def log_commits(prolly_dir: str = '.prolly', ref: Optional[str] = None, max_count: Optional[int] = None):
+    """
+    Show commit history.
+
+    Args:
+        prolly_dir: Path to .prolly directory
+        ref: Ref or commit hash to start from (default: HEAD)
+        max_count: Maximum number of commits to show
+    """
+    repo = _get_repo(prolly_dir)
+
+    count = 0
+    for commit_hash, commit in repo.log(start_ref=ref, max_count=max_count):
+        print(f"commit {commit_hash.hex()}")
+        print(f"Author: {commit.author}")
+        print(f"Date:   {datetime.fromtimestamp(commit.timestamp).strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"\n    {commit.message}\n")
+        count += 1
+
+    if count == 0:
+        print("No commits found")
+
 
 def dump_database(root_hash: str, store_spec: str = 'cached-file://.prolly',
                   cache_size: Optional[int] = None,
@@ -378,6 +474,46 @@ def main():
 
     subparsers = parser.add_subparsers(dest='command', help='Command to run')
 
+    # Init subcommand
+    init_parser = subparsers.add_parser('init', help='Initialize a new prolly repository',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  # Initialize repository in current directory
+  python cli.py init
+
+  # Initialize with specific author
+  python cli.py init --author "John Doe <john@example.com>"
+        ''')
+    init_parser.add_argument('--dir', default='.prolly',
+                        help='Directory for repository (default: .prolly)')
+    init_parser.add_argument('--author', default=None,
+                        help='Default author for commits (default: current user)')
+
+    # Log subcommand
+    log_parser = subparsers.add_parser('log', help='Show commit history',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  # Show all commits from HEAD
+  python cli.py log
+
+  # Show last 5 commits
+  python cli.py log --max-count 5
+
+  # Show commits from a specific branch
+  python cli.py log --ref main
+
+  # Show commits from a specific commit hash
+  python cli.py log --ref 1a2b3c4d
+        ''')
+    log_parser.add_argument('--dir', default='.prolly',
+                        help='Repository directory (default: .prolly)')
+    log_parser.add_argument('--ref', default=None,
+                        help='Ref or commit hash to start from (default: HEAD)')
+    log_parser.add_argument('--max-count', type=int, default=None,
+                        help='Maximum number of commits to show')
+
     # Import SQLite subcommand
     import_parser = subparsers.add_parser('import-sqlite', help='Import SQLite database into ProllyTree',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -577,7 +713,18 @@ to preview what will be removed before actually removing it.
 
     args = parser.parse_args()
 
-    if args.command == 'import-sqlite':
+    if args.command == 'init':
+        init_repo(
+            prolly_dir=args.dir,
+            author=args.author
+        )
+    elif args.command == 'log':
+        log_commits(
+            prolly_dir=args.dir,
+            ref=args.ref,
+            max_count=args.max_count
+        )
+    elif args.command == 'import-sqlite':
         store = create_store_from_spec(args.store, cache_size=args.cache_size)
         import_sqlite_database(
             db_path=args.database,
