@@ -196,7 +196,12 @@ class ProllyTree:
 
     def _rebuild_with_mutations(self, node: Node, mutations: list[tuple[str, str]], verbose: bool = True) -> Node:
         """
-        Core incremental rebuild logic.
+        Core incremental rebuild logic using TreeCursor for uniform traversal.
+
+        This method uses TreeCursor to iterate through the old subtree and merge
+        with mutations, providing a cleaner and more uniform approach than manual
+        tree traversal. Both leaf and internal nodes are handled the same way.
+
         Returns: new node (possibly with different structure)
         """
         if verbose:
@@ -209,93 +214,45 @@ class ProllyTree:
                 print(f"  -> No mutations, reusing node")
             return node
 
+        # Collect all existing entries from this subtree
         if node.is_leaf:
-            # Leaf node: merge old data with mutations
+            # For leaf nodes: directly access keys/values (no need to store for cursor)
+            old_items = list(zip(node.keys, node.values))
             if verbose:
-                print(f"  -> Leaf node, merging {len(node.keys)} existing + {len(mutations)} new entries...")
-            merged = self._merge_sorted(
-                list(zip(node.keys, node.values)),
-                mutations
-            )
-            if verbose:
-                print(f"  -> Merged to {len(merged)} total entries")
-
-            # Build new leaf nodes (may split if too large)
-            new_leaves = self._build_leaves(merged)
-            if verbose:
-                print(f"  -> Built {len(new_leaves)} leaf nodes")
-
-            if len(new_leaves) == 1:
-                return new_leaves[0]
-            else:
-                # Multiple leaves - need parent (may recursively split if too many)
-                return self._build_internal_from_children(new_leaves, verbose)
-
+                print(f"  -> Collected {len(old_items)} existing entries from leaf node")
         else:
-            # Internal node: partition mutations to children and rebuild recursively
-            if verbose:
-                print(f"  -> Internal node, partitioning {len(mutations)} mutations to children")
+            # For internal nodes: use TreeCursor (children are already stored)
+            # Store node temporarily if needed for cursor traversal
+            node_hash = self._hash_node(node)
+            node_was_stored = self._get_node(node_hash) is not None
+            if not node_was_stored:
+                self.store.put_node(node_hash, node)
 
-            # Recursively rebuild children that have mutations
-            new_children = []
-            mut_idx = 0
-
-            for i, child_hash in enumerate(node.values):
-                # Find mutations for this child
-                # For child i, mutations go to it if:
-                # - i == 0: key < separator[0]
-                # - 0 < i < len(node.keys): separator[i-1] <= key < separator[i]
-                # - i == len(node.keys): key >= separator[-1]
-                child_mutations = []
-
-                while mut_idx < len(mutations):
-                    key = mutations[mut_idx][0]
-
-                    # Determine if this mutation belongs to this child
-                    if i == 0:
-                        # First child: all keys < first separator
-                        if len(node.keys) == 0 or key < node.keys[0]:
-                            child_mutations.append(mutations[mut_idx])
-                            mut_idx += 1
-                        else:
-                            break
-                    elif i < len(node.keys):
-                        # Middle child: separator[i-1] <= key < separator[i]
-                        if key < node.keys[i]:
-                            child_mutations.append(mutations[mut_idx])
-                            mut_idx += 1
-                        else:
-                            break
-                    else:
-                        # Last child: all remaining keys
-                        child_mutations.append(mutations[mut_idx])
-                        mut_idx += 1
-
-                # Rebuild child (or reuse if no mutations)
-                child_node = self._get_node(child_hash)
-                if child_node is None:
-                    raise ValueError(f"Child node {child_hash} not found in store")
-                new_child = self._rebuild_with_mutations(child_node, child_mutations, verbose)
-
-                # The rebuild might return multiple nodes (if split), or a single node
-                if isinstance(new_child, list):
-                    new_children.extend(new_child)
-                else:
-                    new_children.append(new_child)
+            cursor = TreeCursor(self.store, node_hash)
+            old_items = []
+            entry = cursor.next()
+            while entry:
+                old_items.append(entry)
+                entry = cursor.next()
 
             if verbose:
-                print(f"  -> Rebuilt {len(new_children)} children from {len(node.values)} original children")
+                print(f"  -> Collected {len(old_items)} existing entries from internal node via TreeCursor")
 
-            # Now rebuild internal structure from new children
-            if len(new_children) == 1:
-                # Single child - unwrap it
-                return new_children[0]
-            else:
-                # Build new internal node(s) from children
-                new_node = self._build_internal_from_children(new_children, verbose)
-                if self.validate:
-                    new_node.validate(self.store, context="_rebuild_with_mutations (internal node rebuild)")
-                return new_node
+        # Merge old entries with mutations
+        merged = self._merge_sorted(old_items, mutations)
+        if verbose:
+            print(f"  -> Merged to {len(merged)} total entries")
+
+        # Build new leaf nodes from merged data (may split if too large)
+        new_leaves = self._build_leaves(merged)
+        if verbose:
+            print(f"  -> Built {len(new_leaves)} leaf nodes")
+
+        if len(new_leaves) == 1:
+            return new_leaves[0]
+        else:
+            # Multiple leaves - build internal parent (may recursively split)
+            return self._build_internal_from_children(new_leaves, verbose)
 
     def _get_first_key(self, node: Node) -> Optional[str]:
         """
