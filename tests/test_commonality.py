@@ -18,7 +18,7 @@ def test_identical_trees(shared_store):
     """Test commonality of two identical trees."""
     # Create tree
     tree1 = ProllyTree(pattern=0.0001, seed=42, store=shared_store)
-    tree1.insert_batch([(i, f'v{i}') for i in range(1, 11)], verbose=False)
+    tree1.insert_batch([(str(i).encode(), f'v{i}'.encode()) for i in range(1, 11)], verbose=False)
     hash1 = tree1._hash_node(tree1.root)
 
     # Same tree, same hash
@@ -34,12 +34,12 @@ def test_completely_disjoint_trees(shared_store):
     """Test commonality of two completely different trees."""
     # Create first tree
     tree1 = ProllyTree(pattern=0.0001, seed=42, store=shared_store)
-    tree1.insert_batch([(i, f'v{i}') for i in range(1, 11)], verbose=False)
+    tree1.insert_batch([(str(i).encode(), f'v{i}'.encode()) for i in range(1, 11)], verbose=False)
     hash1 = tree1._hash_node(tree1.root)
 
     # Create second tree with different data
     tree2 = ProllyTree(pattern=0.0001, seed=42, store=shared_store)
-    tree2.insert_batch([(i+100, f'v{i+100}') for i in range(1, 11)], verbose=False)
+    tree2.insert_batch([(str(i+100).encode(), f'v{i+100}'.encode()) for i in range(1, 11)], verbose=False)
     hash2 = tree2._hash_node(tree2.root)
 
     stats = compute_commonality(shared_store, hash1, hash2)
@@ -54,12 +54,12 @@ def test_overlapping_trees(shared_store):
     """Test commonality statistics are computed correctly."""
     # Create first tree with keys 1-10
     tree1 = ProllyTree(pattern=0.0001, seed=42, store=shared_store)
-    tree1.insert_batch([(i, f'v{i}') for i in range(1, 11)], verbose=False)
+    tree1.insert_batch([(str(i).encode(), f'v{i}'.encode()) for i in range(1, 11)], verbose=False)
     hash1 = tree1._hash_node(tree1.root)
 
     # Create second tree with different keys
     tree2 = ProllyTree(pattern=0.0001, seed=42, store=shared_store)
-    tree2.insert_batch([(i, f'w{i}') for i in range(1, 11)], verbose=False)
+    tree2.insert_batch([(str(i).encode(), f'w{i}'.encode()) for i in range(1, 11)], verbose=False)
     hash2 = tree2._hash_node(tree2.root)
 
     stats = compute_commonality(shared_store, hash1, hash2)
@@ -76,12 +76,12 @@ def test_subset_tree(shared_store):
     """Test commonality with different sized trees."""
     # Create first tree with keys 1-5
     tree1 = ProllyTree(pattern=0.0001, seed=42, store=shared_store)
-    tree1.insert_batch([(i, f'v{i}') for i in range(1, 6)], verbose=False)
+    tree1.insert_batch([(str(i).encode(), f'v{i}'.encode()) for i in range(1, 6)], verbose=False)
     hash1 = tree1._hash_node(tree1.root)
 
     # Create second tree with more keys
     tree2 = ProllyTree(pattern=0.0001, seed=42, store=shared_store)
-    tree2.insert_batch([(i, f'v{i}') for i in range(1, 21)], verbose=False)
+    tree2.insert_batch([(str(i).encode(), f'v{i}'.encode()) for i in range(1, 21)], verbose=False)
     hash2 = tree2._hash_node(tree2.root)
 
     stats = compute_commonality(shared_store, hash1, hash2)
@@ -96,7 +96,7 @@ def test_subset_tree(shared_store):
 def test_collect_node_hashes(shared_store):
     """Test that collect_node_hashes visits all nodes."""
     tree = ProllyTree(pattern=0.0001, seed=42, store=shared_store)
-    tree.insert_batch([(i, f'v{i}') for i in range(1, 51)], verbose=False)
+    tree.insert_batch([(str(i).encode(), f'v{i}'.encode()) for i in range(1, 51)], verbose=False)
     root_hash = tree._hash_node(tree.root)
 
     # Collect all node hashes

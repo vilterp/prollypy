@@ -6,7 +6,7 @@ based on content hashes.
 """
 
 from dataclasses import dataclass
-from typing import Any, Iterator, Union, Optional
+from typing import Iterator, Union, Optional
 from .store import Store
 from .cursor import TreeCursor
 
@@ -14,8 +14,8 @@ from .cursor import TreeCursor
 @dataclass(frozen=True)
 class Added:
     """A key-value pair was added."""
-    key: Any
-    value: Any
+    key: bytes
+    value: bytes
 
     def __repr__(self):
         return f"Added({self.key!r}, {self.value!r})"
@@ -24,8 +24,8 @@ class Added:
 @dataclass(frozen=True)
 class Deleted:
     """A key was deleted."""
-    key: Any
-    old_value: Any
+    key: bytes
+    old_value: bytes
 
     def __repr__(self):
         return f"Deleted({self.key!r}, {self.old_value!r})"
@@ -34,9 +34,9 @@ class Deleted:
 @dataclass(frozen=True)
 class Modified:
     """A key's value was modified."""
-    key: Any
-    old_value: Any
-    new_value: Any
+    key: bytes
+    old_value: bytes
+    new_value: bytes
 
     def __repr__(self):
         return f"Modified({self.key!r}, {self.old_value!r} -> {self.new_value!r})"
@@ -70,7 +70,7 @@ class Differ:
         self.store = store
         self.stats = DiffStats()
 
-    def diff(self, old_hash: str, new_hash: str, prefix: Optional[str] = None) -> Iterator[DiffEvent]:
+    def diff(self, old_hash: bytes, new_hash: bytes, prefix: Optional[bytes] = None) -> Iterator[DiffEvent]:
         """
         Compute differences between two trees using cursor-based traversal.
 
@@ -192,13 +192,11 @@ class Differ:
         """Get statistics from the most recent diff operation."""
         return self.stats
 
-    def _matches_prefix(self, key: Any) -> bool:
+    def _matches_prefix(self, key: bytes) -> bool:
         """Check if a key matches the prefix filter."""
         if self.prefix is None:
             return True
-        # Convert key to string for comparison
-        key_str = str(key)
-        return key_str.startswith(self.prefix)
+        return key.startswith(self.prefix)
 
     def _diff_nodes(self, old_node, new_node) -> Iterator[DiffEvent]:
         """
@@ -463,7 +461,7 @@ class Differ:
 
 
 # Backward compatibility function
-def diff(store: Store, old_hash: str, new_hash: str, prefix: Optional[str] = None) -> Iterator[DiffEvent]:
+def diff(store: Store, old_hash: bytes, new_hash: bytes, prefix: Optional[bytes] = None) -> Iterator[DiffEvent]:
     """
     Compute differences between two trees (backward compatibility wrapper).
 

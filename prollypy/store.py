@@ -7,8 +7,8 @@ Provides a Store protocol and multiple implementations:
 """
 
 from typing import Protocol, Optional, Iterator
-import json
 import os
+import pickle
 from collections import OrderedDict
 from .stats import Stats
 from .node import Node
@@ -17,19 +17,19 @@ from .node import Node
 class Store(Protocol):
     """Protocol for node storage backends."""
 
-    def put_node(self, node_hash: str, node: Node):
+    def put_node(self, node_hash: bytes, node: Node):
         """Store a node by its hash."""
         ...
 
-    def get_node(self, node_hash: str) -> Optional[Node]:
+    def get_node(self, node_hash: bytes) -> Optional[Node]:
         """Retrieve a node by its hash. Returns None if not found."""
         ...
 
-    def delete_node(self, node_hash: str) -> bool:
+    def delete_node(self, node_hash: bytes) -> bool:
         """Delete a node by its hash. Returns True if deleted, False if not found."""
         ...
 
-    def list_nodes(self) -> Iterator[str]:
+    def list_nodes(self) -> Iterator[bytes]:
         """Iterate over all node hashes in the store."""
         ...
 
@@ -42,24 +42,24 @@ class MemoryStore:
     """In-memory node storage using a dictionary."""
 
     def __init__(self):
-        self.nodes = {}
+        self.nodes: dict[bytes, Node] = {}
 
-    def put_node(self, node_hash: str, node: Node):
+    def put_node(self, node_hash: bytes, node: Node):
         """Store a node in memory."""
         self.nodes[node_hash] = node
 
-    def get_node(self, node_hash: str) -> Optional[Node]:
+    def get_node(self, node_hash: bytes) -> Optional[Node]:
         """Retrieve a node from memory."""
         return self.nodes.get(node_hash)
 
-    def delete_node(self, node_hash: str) -> bool:
+    def delete_node(self, node_hash: bytes) -> bool:
         """Delete a node from memory."""
         if node_hash in self.nodes:
             del self.nodes[node_hash]
             return True
         return False
 
-    def list_nodes(self) -> Iterator[str]:
+    def list_nodes(self) -> Iterator[bytes]:
         """Iterate over all node hashes in memory."""
         yield from self.nodes.keys()
 
@@ -84,54 +84,48 @@ class FileSystemStore:
         # Statistics tracking
         self.stats = Stats()
 
-    def _node_path(self, node_hash: str) -> str:
+    def _node_path(self, node_hash: bytes) -> str:
         """Get the file path for a node hash."""
+        # Convert bytes to hex string for filesystem path
+        hash_str = node_hash.hex()
         # Use first 2 chars as subdirectory for better filesystem performance
-        subdir = node_hash[:2]
+        subdir = hash_str[:2]
         dir_path = os.path.join(self.base_path, subdir)
         os.makedirs(dir_path, exist_ok=True)
-        return os.path.join(dir_path, node_hash)
+        return os.path.join(dir_path, hash_str)
 
-    def _serialize_node(self, node: Node) -> str:
-        """Serialize a node to JSON."""
-        return json.dumps({
-            'is_leaf': node.is_leaf,
-            'keys': node.keys,
-            'values': node.values
-        })
+    def _serialize_node(self, node: Node) -> bytes:
+        """Serialize a node using pickle."""
+        return pickle.dumps(node)
 
-    def _deserialize_node(self, data: str) -> Node:
-        """Deserialize a node from JSON."""
-        obj = json.loads(data)
-        node = Node(is_leaf=obj['is_leaf'])
-        node.keys = obj['keys']
-        node.values = obj['values']
-        return node
+    def _deserialize_node(self, data: bytes) -> Node:
+        """Deserialize a node from pickle."""
+        return pickle.loads(data)
 
-    def put_node(self, node_hash: str, node: Node):
+    def put_node(self, node_hash: bytes, node: Node):
         """Store a node to filesystem."""
         path = self._node_path(node_hash)
         serialized = self._serialize_node(node)
 
         # Track node size using Stats
-        size = len(serialized.encode('utf-8'))
+        size = len(serialized)
         if node.is_leaf:
             self.stats.record_new_leaf(size)
         else:
             self.stats.record_new_internal(size)
 
-        with open(path, 'w') as f:
+        with open(path, 'wb') as f:
             f.write(serialized)
 
-    def get_node(self, node_hash: str) -> Optional[Node]:
+    def get_node(self, node_hash: bytes) -> Optional[Node]:
         """Retrieve a node from filesystem."""
         path = self._node_path(node_hash)
         if not os.path.exists(path):
             return None
-        with open(path, 'r') as f:
+        with open(path, 'rb') as f:
             return self._deserialize_node(f.read())
 
-    def delete_node(self, node_hash: str) -> bool:
+    def delete_node(self, node_hash: bytes) -> bool:
         """Delete a node from filesystem."""
         path = self._node_path(node_hash)
         if os.path.exists(path):
@@ -139,7 +133,7 @@ class FileSystemStore:
             return True
         return False
 
-    def list_nodes(self) -> Iterator[str]:
+    def list_nodes(self) -> Iterator[bytes]:
         """Iterate over all node hashes in filesystem."""
         for subdir in os.listdir(self.base_path):
             subdir_path = os.path.join(self.base_path, subdir)
@@ -147,7 +141,8 @@ class FileSystemStore:
                 for filename in os.listdir(subdir_path):
                     file_path = os.path.join(subdir_path, filename)
                     if os.path.isfile(file_path):
-                        yield filename
+                        # Convert hex string filename back to bytes
+                        yield bytes.fromhex(filename)
 
     def count_nodes(self) -> int:
         """Return the total number of nodes in storage."""
@@ -176,14 +171,14 @@ class CachedFSStore:
         """
         self.fs_store = FileSystemStore(base_path)
         self.cache_size = cache_size
-        self.cache = OrderedDict()  # LRU cache using OrderedDict
+        self.cache: OrderedDict[bytes, Node] = OrderedDict()  # LRU cache using OrderedDict
 
         # Statistics
         self.cache_hits = 0
         self.cache_misses = 0
         self.cache_evictions = 0
 
-    def put_node(self, node_hash: str, node: Node):
+    def put_node(self, node_hash: bytes, node: Node):
         """Store a node to both cache and filesystem."""
         # Check if already in cache - if so, no need to write to filesystem
         if node_hash in self.cache:
@@ -197,7 +192,7 @@ class CachedFSStore:
         # Add to cache (will evict if needed)
         self._cache_put(node_hash, node)
 
-    def get_node(self, node_hash: str) -> Optional[Node]:
+    def get_node(self, node_hash: bytes) -> Optional[Node]:
         """Retrieve a node from cache or filesystem."""
         # Try cache first
         node = self._cache_get(node_hash)
@@ -215,7 +210,7 @@ class CachedFSStore:
 
         return node
 
-    def delete_node(self, node_hash: str) -> bool:
+    def delete_node(self, node_hash: bytes) -> bool:
         """Delete a node from both cache and filesystem."""
         # Remove from cache if present
         if node_hash in self.cache:
@@ -224,7 +219,7 @@ class CachedFSStore:
         # Remove from filesystem
         return self.fs_store.delete_node(node_hash)
 
-    def list_nodes(self) -> Iterator[str]:
+    def list_nodes(self) -> Iterator[bytes]:
         """Iterate over all node hashes in filesystem."""
         yield from self.fs_store.list_nodes()
 
@@ -232,7 +227,7 @@ class CachedFSStore:
         """Return the total number of nodes in storage."""
         return self.fs_store.count_nodes()
 
-    def _cache_get(self, key: str) -> Optional[Node]:
+    def _cache_get(self, key: bytes) -> Optional[Node]:
         """Get item from cache and move to end (most recently used)."""
         if key not in self.cache:
             return None
@@ -240,7 +235,7 @@ class CachedFSStore:
         self.cache.move_to_end(key)
         return self.cache[key]
 
-    def _cache_put(self, key: str, value: Node):
+    def _cache_put(self, key: bytes, value: Node):
         """Add item to cache, evicting LRU item if at capacity."""
         if key in self.cache:
             # Update existing item and move to end

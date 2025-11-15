@@ -19,7 +19,7 @@ class TreeCursor:
     It also supports peeking at the next hash to enable efficient subtree skipping.
     """
 
-    def __init__(self, store: Store, root_hash: str, seek_to: Optional[str] = None):
+    def __init__(self, store: Store, root_hash: bytes, seek_to: Optional[bytes] = None):
         """
         Initialize cursor at the beginning of the tree or at a specific prefix.
 
@@ -41,7 +41,7 @@ class TreeCursor:
         else:
             self._descend_to_first(root_hash)
 
-    def _seek(self, node_hash: str, target: str):
+    def _seek(self, node_hash: bytes, target: bytes):
         """
         Seek to the first key >= target in O(log n) time.
 
@@ -82,7 +82,7 @@ class TreeCursor:
         # At a leaf node: find first key >= target
         idx = 0
         for i, key in enumerate(node.keys):
-            if isinstance(key, str) and key >= target:
+            if key >= target:
                 idx = i
                 break
         else:
@@ -91,7 +91,7 @@ class TreeCursor:
 
         self.stack.append((node, idx))
 
-    def _descend_to_first(self, node_hash: str):
+    def _descend_to_first(self, node_hash: bytes):
         """Descend to the leftmost leaf starting from node_hash."""
         node = self.store.get_node(node_hash)
         if node is None:
@@ -110,7 +110,7 @@ class TreeCursor:
         # At a leaf node, push it with index 0
         self.stack.append((node, 0))
 
-    def peek_next_hash(self) -> Optional[str]:
+    def peek_next_hash(self) -> Optional[bytes]:
         """
         Peek at the next subtree hash that will be traversed.
 
@@ -127,7 +127,7 @@ class TreeCursor:
 
         return None
 
-    def next(self) -> Optional[Tuple[str, str]]:
+    def next(self) -> Optional[Tuple[bytes, bytes]]:
         """
         Advance to the next key-value pair.
 
@@ -196,7 +196,7 @@ class TreeCursor:
                 # Leaf node that's exhausted
                 self.stack.pop()
 
-    def skip_subtree(self, subtree_hash: str):
+    def skip_subtree(self, subtree_hash: bytes):
         """
         Skip over a subtree entirely without visiting its entries.
 

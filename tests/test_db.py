@@ -121,11 +121,11 @@ def test_read_rows_with_reconstruction(db_with_table):
 
     assert len(results) == 2
     key1, row1 = results[0]
-    assert key1 == "/d/users/1"
+    assert key1 == b"/d/users/1"
     assert row1 == {"id": 1, "name": "Alice", "email": "alice@example.com"}
 
     key2, row2 = results[1]
-    assert key2 == "/d/users/2"
+    assert key2 == b"/d/users/2"
     assert row2 == {"id": 2, "name": "Bob", "email": "bob@example.com"}
 
 
@@ -185,7 +185,7 @@ def test_get_root_hash(db_with_table):
     db_with_table.insert_rows("users", iter(rows), verbose=False)
 
     root_hash = db_with_table.get_root_hash()
-    assert isinstance(root_hash, str)
+    assert isinstance(root_hash, bytes)
     assert len(root_hash) > 0  # Hash should be non-empty
 
 

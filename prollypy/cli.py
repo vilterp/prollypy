@@ -45,19 +45,21 @@ def dump_database(root_hash: str, store_spec: str = 'cached-file://.prolly',
     tree = ProllyTree(pattern=0.0001, seed=42, store=store)
 
     print(f"Loading tree from root hash: {root_hash}")
-    root_node = store.get_node(root_hash)
+    root_hash_bytes = bytes.fromhex(root_hash)
+    root_node = store.get_node(root_hash_bytes)
     if not root_node:
         print(f"Error: Root hash {root_hash} not found in store")
         return
     tree.root = root_node
 
     # Use prefix if provided, otherwise dump everything
-    prefix = prefix or ""
+    prefix_str = prefix or ""
+    prefix_bytes = prefix_str.encode('utf-8')
 
     # Generic dump
-    print(f"\nKeys with prefix: '{prefix}'")
+    print(f"\nKeys with prefix: '{prefix_str}'")
     count = 0
-    for key, value in tree.items(prefix):
+    for key, value in tree.items(prefix_bytes):
         print(f"{key} => {value}")
         count += 1
 
@@ -106,7 +108,12 @@ def diff_trees(old_hash: str, new_hash: str,
     deleted_count = 0
     modified_count = 0
 
-    for event in differ.diff(old_hash, new_hash, prefix=prefix):
+    # Convert hex strings to bytes
+    old_hash_bytes = bytes.fromhex(old_hash)
+    new_hash_bytes = bytes.fromhex(new_hash)
+    prefix_bytes = prefix.encode('utf-8') if prefix else None
+
+    for event in differ.diff(old_hash_bytes, new_hash_bytes, prefix=prefix_bytes):
         event_count += 1
 
         if limit is None or event_count <= limit:
@@ -183,7 +190,8 @@ def print_tree_structure(root_hash: str, store_spec: str = 'cached-file://.proll
 
     # Create tree and load from root hash
     tree = ProllyTree(pattern=0.0001, seed=42, store=store)
-    root_node = store.get_node(root_hash)
+    root_hash_bytes = bytes.fromhex(root_hash)
+    root_node = store.get_node(root_hash_bytes)
 
     if not root_node:
         print(f"\nError: Root hash {root_hash} not found in store")
@@ -215,8 +223,12 @@ def commonality_analysis(left_hash: str, right_hash: str, store_spec: str = 'cac
     print(f"Opening store: {store_spec}")
     store = create_store_from_spec(store_spec, cache_size=cache_size)
 
+    # Convert hex strings to bytes
+    left_hash_bytes = bytes.fromhex(left_hash)
+    right_hash_bytes = bytes.fromhex(right_hash)
+
     # Compute commonality
-    stats = compute_commonality(store, left_hash, right_hash)
+    stats = compute_commonality(store, left_hash_bytes, right_hash_bytes)
 
     # Print report
     print_commonality_report(left_hash, right_hash, stats)
@@ -238,7 +250,8 @@ def get_key(root_hash: str, key: str, store_spec: str = 'cached-file://.prolly',
 
     # Load tree with this root
     tree = ProllyTree(pattern=0.0001, seed=42, store=store)
-    root_node = store.get_node(root_hash)
+    root_hash_bytes = bytes.fromhex(root_hash)
+    root_node = store.get_node(root_hash_bytes)
     if root_node is None:
         print(f"Error: Root hash {root_hash} not found in store")
         return
@@ -246,8 +259,9 @@ def get_key(root_hash: str, key: str, store_spec: str = 'cached-file://.prolly',
     tree.root = root_node
 
     # Search for the key
-    for k, v in tree.items(key):
-        if k == key:
+    key_bytes = key.encode('utf-8')
+    for k, v in tree.items(key_bytes):
+        if k == key_bytes:
             print(v)
             return
 
@@ -271,7 +285,8 @@ def set_key(root_hash: str, key: str, value: str, store_spec: str = 'cached-file
 
     # Load tree with this root
     tree = ProllyTree(pattern=0.0001, seed=42, store=store)
-    root_node = store.get_node(root_hash)
+    root_hash_bytes = bytes.fromhex(root_hash)
+    root_node = store.get_node(root_hash_bytes)
     if root_node is None:
         print(f"Error: Root hash {root_hash} not found in store")
         return
@@ -279,7 +294,9 @@ def set_key(root_hash: str, key: str, value: str, store_spec: str = 'cached-file
     tree.root = root_node
 
     # Insert the key-value pair
-    tree.insert_batch([(key, value)], verbose=False)
+    key_bytes = key.encode('utf-8')
+    value_bytes = value.encode('utf-8')
+    tree.insert_batch([(key_bytes, value_bytes)], verbose=False)
 
     # Get new root hash
     new_root_hash = tree._hash_node(tree.root)
@@ -288,7 +305,7 @@ def set_key(root_hash: str, key: str, value: str, store_spec: str = 'cached-file
     print(f"SET COMPLETE")
     print(f"{'='*80}")
     print(f"Old root: {root_hash}")
-    print(f"New root: {new_root_hash}")
+    print(f"New root: {new_root_hash.hex()}")
     print(f"Key:      {key}")
     print(f"Value:    {value}")
     print(f"{'='*80}")
@@ -320,7 +337,8 @@ def gc_command(root_hashes: List[str], store_spec: str = 'cached-file://.prolly'
 
     # Run garbage collection
     print("Analyzing store...")
-    root_set = set(root_hashes)
+    # Convert hex strings to bytes
+    root_set = {bytes.fromhex(h) for h in root_hashes}
     stats = garbage_collect(store, root_set, dry_run=dry_run)
 
     print()

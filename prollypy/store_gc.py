@@ -39,7 +39,7 @@ class GCStats:
         )
 
 
-def find_reachable_nodes(store: Store, root_hashes: Set[str]) -> Set[str]:
+def find_reachable_nodes(store: Store, root_hashes: Set[bytes]) -> Set[bytes]:
     """
     Find all nodes reachable from a set of root hashes.
 
@@ -48,12 +48,12 @@ def find_reachable_nodes(store: Store, root_hashes: Set[str]) -> Set[str]:
 
     Args:
         store: Storage backend containing nodes
-        root_hashes: Set of root hashes to start traversal from
+        root_hashes: Set of root hashes (as bytes) to start traversal from
 
     Returns:
         Set of all reachable node hashes (including roots)
     """
-    reachable = set()
+    reachable: Set[bytes] = set()
     to_visit = list(root_hashes)
 
     while to_visit:
@@ -81,7 +81,7 @@ def find_reachable_nodes(store: Store, root_hashes: Set[str]) -> Set[str]:
     return reachable
 
 
-def iter_all_nodes(store: Store) -> Iterator[str]:
+def iter_all_nodes(store: Store) -> Iterator[bytes]:
     """
     Iterate over all node hashes in the store.
 
@@ -89,18 +89,18 @@ def iter_all_nodes(store: Store) -> Iterator[str]:
         store: Storage backend to query
 
     Yields:
-        Node hashes present in the store
+        Node hashes present in the store (as bytes)
     """
     yield from store.list_nodes()
 
 
-def find_garbage_nodes(store: Store, root_hashes: Set[str]) -> Set[str]:
+def find_garbage_nodes(store: Store, root_hashes: Set[bytes]) -> Set[bytes]:
     """
     Find all garbage (unreachable) nodes in the store.
 
     Args:
         store: Storage backend containing nodes
-        root_hashes: Set of root hashes to keep (reachable roots)
+        root_hashes: Set of root hashes (as bytes) to keep (reachable roots)
 
     Returns:
         Set of garbage node hashes (unreachable from any root)
@@ -117,13 +117,13 @@ def find_garbage_nodes(store: Store, root_hashes: Set[str]) -> Set[str]:
     return garbage
 
 
-def collect_garbage_stats(store: Store, root_hashes: Set[str]) -> GCStats:
+def collect_garbage_stats(store: Store, root_hashes: Set[bytes]) -> GCStats:
     """
     Compute garbage collection statistics without removing anything.
 
     Args:
         store: Storage backend containing nodes
-        root_hashes: Set of root hashes to keep
+        root_hashes: Set of root hashes (as bytes) to keep
 
     Returns:
         GCStats with information about reachable and garbage nodes
@@ -142,7 +142,7 @@ def collect_garbage_stats(store: Store, root_hashes: Set[str]) -> GCStats:
     return stats
 
 
-def remove_garbage(store: Store, garbage_hashes: Set[str]) -> int:
+def remove_garbage(store: Store, garbage_hashes: Set[bytes]) -> int:
     """
     Remove garbage nodes from the store.
 
@@ -151,7 +151,7 @@ def remove_garbage(store: Store, garbage_hashes: Set[str]) -> int:
 
     Args:
         store: Storage backend to remove nodes from
-        garbage_hashes: Set of node hashes to remove
+        garbage_hashes: Set of node hashes (as bytes) to remove
 
     Returns:
         Number of nodes actually removed
@@ -165,13 +165,13 @@ def remove_garbage(store: Store, garbage_hashes: Set[str]) -> int:
     return removed_count
 
 
-def garbage_collect(store: Store, root_hashes: Set[str], dry_run: bool = True) -> GCStats:
+def garbage_collect(store: Store, root_hashes: Set[bytes], dry_run: bool = True) -> GCStats:
     """
     Perform garbage collection on a store.
 
     Args:
         store: Storage backend to garbage collect
-        root_hashes: Set of root hashes to keep (everything else is garbage)
+        root_hashes: Set of root hashes (as bytes) to keep (everything else is garbage)
         dry_run: If True, only compute statistics without removing nodes
 
     Returns:
