@@ -72,7 +72,7 @@ def import_sqlite_table(db: DB, sqlite_conn: sqlite3.Connection, table_name: str
         db: DB instance
         sqlite_conn: SQLite connection
         table_name: Name of table to import
-        batch_size: Batch size for inserts
+        batch_size: Batch size for inserts (0 = insert all rows in one batch)
         verbose_batches: Show detailed batch statistics
         validate: Validate tree is sorted after import
 
@@ -116,6 +116,11 @@ def import_sqlite_table(db: DB, sqlite_conn: sqlite3.Connection, table_name: str
     if row_count == 0:
         print("Skipping empty table")
         return 0
+
+    # If batch_size is 0, use row_count (import everything in one batch)
+    if batch_size == 0:
+        batch_size = row_count
+        print(f"Using single batch mode: {batch_size:,} rows")
 
     # Create table in DB
     print(f"Stored schema: {len(columns)} columns")
