@@ -433,47 +433,57 @@ def diff_trees(old_hash: str, new_hash: str,
             print(f"  {key}: {value}")
 
 
-def print_tree_structure(root_hash: str, store_spec: str = 'cached-file://.prolly',
+def print_tree_structure(ref: str, prolly_dir: str = '.prolly',
                         cache_size: Optional[int] = None,
                         prefix: Optional[str] = None,
                         verbose: bool = False):
     """
-    Print the tree structure for a given root hash.
+    Print the tree structure for a given ref or commit.
 
     Args:
-        root_hash: Root hash of tree to visualize
-        store_spec: Store specification
+        ref: Ref name, commit hash, or "HEAD"
+        prolly_dir: Repository directory
         cache_size: Cache size for cached stores
         prefix: Optional key prefix to filter tree visualization
         verbose: If True, show all leaf node values. If False, only show first/last keys and count.
     """
+    repo = _get_repo(prolly_dir, cache_size=cache_size or 1000)
+
+    # Resolve ref to commit
+    commit_hash = repo.resolve_ref(ref)
+    if commit_hash is None:
+        print(f"Error: Ref '{ref}' not found")
+        return
+    commit = repo.get_commit(commit_hash)
+    if commit is None:
+        print(f"Error: Commit not found")
+        return
+    tree_root = commit.tree_root
 
     print("="*80)
     print("TREE STRUCTURE")
     print("="*80)
-    print(f"Root hash: {root_hash}")
-    print(f"Store:     {store_spec}")
+    print(f"Ref:       {ref}")
+    print(f"Commit:    {commit_hash.hex()[:8]}")
+    print(f"Tree root: {tree_root.hex()}")
     if prefix:
         print(f"Prefix:    {prefix}")
     if not verbose:
         print(f"Mode:      compact (use --verbose to show all leaf values)")
 
-    store = create_store_from_spec(store_spec, cache_size=cache_size)
-
     # Create tree and load from root hash
-    tree = ProllyTree(pattern=0.0001, seed=42, store=store)
-    root_hash_bytes = bytes.fromhex(root_hash)
-    root_node = store.get_node(root_hash_bytes)
+    tree = ProllyTree(pattern=0.0001, seed=42, store=repo.block_store)
+    root_node = repo.block_store.get_node(tree_root)
 
     if not root_node:
-        print(f"\nError: Root hash {root_hash} not found in store")
+        print(f"\nError: Tree root not found in store")
         return
     tree.root = root_node
 
     # If prefix is specified, we'll filter in the visualization
     # Note: The _print_tree method doesn't natively support prefix filtering,
     # but we can add it as a label and the user can still see the full tree structure
-    label = f"root={root_hash[:8]}"
+    label = f"root={tree_root.hex()[:8]}"
     if prefix:
         label += f", filtering by prefix='{prefix}'"
         print(f"\nNote: Full tree structure shown. Use 'dump' command to see filtered data.")
@@ -857,26 +867,26 @@ Examples:
                         help='Key prefix to filter diff results')
 
     # Print-tree subcommand
-    print_tree_parser = subparsers.add_parser('print-tree', help='Print tree structure by root hash',
+    print_tree_parser = subparsers.add_parser('print-tree', help='Print tree structure for a ref/commit',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
-  # Print tree structure (compact mode)
-  python cli.py print-tree a16b213fc2e7d598
+  # Print tree structure from HEAD (compact mode)
+  python cli.py print-tree HEAD
 
-  # Print tree with all leaf values
-  python cli.py print-tree a16b213fc2e7d598 --verbose
+  # Print tree from a branch
+  python cli.py print-tree main
 
-  # Print tree with custom store
-  python cli.py print-tree a16b213fc2e7d598 --store cached-file:///tmp/data
+  # Print tree from a commit hash
+  python cli.py print-tree a16b213f --verbose
 
   # Print tree with prefix label
-  python cli.py print-tree a16b213fc2e7d598 --prefix /d/buses
+  python cli.py print-tree HEAD --prefix /d/buses
         ''')
 
-    print_tree_parser.add_argument('root_hash', help='Root hash of tree to visualize')
-    print_tree_parser.add_argument('--store', default='cached-file://.prolly',
-                        help='Store spec (default: cached-file://.prolly)')
+    print_tree_parser.add_argument('ref', help='Ref name, commit hash, or "HEAD"')
+    print_tree_parser.add_argument('--dir', default='.prolly',
+                        help='Repository directory (default: .prolly)')
     print_tree_parser.add_argument('--cache-size', type=int, default=None,
                         help='Cache size for cached stores')
     print_tree_parser.add_argument('--prefix', type=str, default=None,
@@ -1022,8 +1032,8 @@ to preview what will be removed before actually removing it.
         )
     elif args.command == 'print-tree':
         print_tree_structure(
-            root_hash=args.root_hash,
-            store_spec=args.store,
+            ref=args.ref,
+            prolly_dir=args.dir,
             cache_size=args.cache_size,
             prefix=args.prefix,
             verbose=args.verbose
