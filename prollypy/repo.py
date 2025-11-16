@@ -540,6 +540,7 @@ class Repo:
         Supports:
         - Branch/tag names (e.g., "main", "develop")
         - "HEAD" - resolves to the commit of the current HEAD ref
+        - "HEAD~" or "HEAD~N" - resolves to the Nth parent of HEAD (default N=1)
         - Full commit hashes (64 hex characters)
         - Partial commit hashes (e.g., "341e719a") - must match exactly one commit
 
@@ -549,6 +550,34 @@ class Repo:
         Returns:
             Commit hash bytes, or None if not found
         """
+        # Handle HEAD~ syntax (HEAD~, HEAD~1, HEAD~2, etc.)
+        if ref.startswith("HEAD~"):
+            # Parse the number of parents to go back
+            if ref == "HEAD~":
+                n = 1
+            else:
+                try:
+                    n = int(ref[5:])  # Everything after "HEAD~"
+                except ValueError:
+                    return None
+
+            # Start with HEAD
+            current_commit_hash = None
+            head_commit, _ = self.get_head()
+            if head_commit is None:
+                return None
+            current_commit_hash = head_commit.compute_hash()
+
+            # Walk back n parents
+            for _ in range(n):
+                current_commit = self.get_commit(current_commit_hash)
+                if current_commit is None or not current_commit.parents:
+                    return None  # No parent available
+                # Take the first parent
+                current_commit_hash = current_commit.parents[0]
+
+            return current_commit_hash
+
         # Handle HEAD specially
         if ref == "HEAD":
             head_commit, _ = self.get_head()
