@@ -32,6 +32,7 @@ class TableDiff:
     removed_rows: List[RowDiff] = field(default_factory=list)
     modified_rows: List[RowDiff] = field(default_factory=list)
     changed_columns: Set[str] = field(default_factory=set)  # Union of all changed columns
+    column_change_counts: Dict[str, int] = field(default_factory=dict)  # Column -> count of rows where it changed
 
     @property
     def has_changes(self) -> bool:
@@ -55,6 +56,24 @@ class TableDiff:
         if self.changed_columns:
             parts.append(f"columns: {', '.join(sorted(self.changed_columns))}")
         return ", ".join(parts) if parts else "no changes"
+
+    def column_stats_summary(self) -> str:
+        """Get a summary of column change statistics."""
+        if not self.column_change_counts:
+            return "no column changes"
+
+        # Sort by count descending, then by name
+        sorted_cols = sorted(
+            self.column_change_counts.items(),
+            key=lambda x: (-x[1], x[0])
+        )
+
+        lines = []
+        for col, count in sorted_cols:
+            pct = (count / len(self.modified_rows) * 100) if self.modified_rows else 0
+            lines.append(f"{col}: {count:,} rows ({pct:.1f}%)")
+
+        return "\n".join(lines)
 
 
 @dataclass
@@ -185,6 +204,10 @@ def diff_table(old_db: DB, new_db: DB, table_name: str) -> TableDiff:
                 changed_columns=changed_cols
             ))
             diff.changed_columns.update(changed_cols)
+
+            # Update column change counts
+            for col in changed_cols:
+                diff.column_change_counts[col] = diff.column_change_counts.get(col, 0) + 1
 
     return diff
 

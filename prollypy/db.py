@@ -184,7 +184,12 @@ class DB:
 
             if reconstruct and table:
                 # Reconstruct as dictionary
-                row_dict = dict(zip(table.columns, row_values))
+                # If primary_key is ["rowid"], skip the first element (rowid)
+                if table.primary_key == ["rowid"]:
+                    data_values = row_values[1:]  # Skip rowid
+                else:
+                    data_values = row_values
+                row_dict = dict(zip(table.columns, data_values))
                 yield (key, row_dict)
             else:
                 # Return raw array
