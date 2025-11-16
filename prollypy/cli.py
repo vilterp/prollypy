@@ -435,7 +435,7 @@ def diff_trees(old_hash: str, new_hash: str,
             print(f"  {key}: {value}")
 
 
-def db_diff_refs(old_ref: str, new_ref: Optional[str] = None,
+def db_diff_refs(old_ref: Optional[str] = None, new_ref: Optional[str] = None,
                  prolly_dir: str = '.prolly',
                  tables: Optional[List[str]] = None,
                  verbose: bool = False):
@@ -443,13 +443,19 @@ def db_diff_refs(old_ref: str, new_ref: Optional[str] = None,
     Schema-aware diff of two database commits.
 
     Args:
-        old_ref: First ref/commit
+        old_ref: First ref/commit (default: HEAD~)
         new_ref: Second ref/commit (default: HEAD)
         prolly_dir: Repository directory
         tables: Optional list of table names to diff
         verbose: If True, show detailed row changes
     """
     repo = _get_repo(prolly_dir)
+
+    # Default to HEAD~ vs HEAD
+    if old_ref is None:
+        old_ref = "HEAD~"
+    if new_ref is None:
+        new_ref = "HEAD"
 
     # Resolve old_ref
     old_commit_hash = repo.resolve_ref(old_ref)
@@ -462,28 +468,20 @@ def db_diff_refs(old_ref: str, new_ref: Optional[str] = None,
         return
 
     # Resolve new_ref
-    if new_ref is None:
-        new_commit, ref_name = repo.get_head()
-        if new_commit is None:
-            print("Error: No commits in repository")
-            return
-        new_label = f"HEAD ({ref_name})"
-    else:
-        new_commit_hash = repo.resolve_ref(new_ref)
-        if new_commit_hash is None:
-            print(f"Error: Ref '{new_ref}' not found")
-            return
-        new_commit = repo.get_commit(new_commit_hash)
-        if new_commit is None:
-            print(f"Error: Commit not found")
-            return
-        new_label = new_ref
+    new_commit_hash = repo.resolve_ref(new_ref)
+    if new_commit_hash is None:
+        print(f"Error: Ref '{new_ref}' not found")
+        return
+    new_commit = repo.get_commit(new_commit_hash)
+    if new_commit is None:
+        print(f"Error: Commit not found")
+        return
 
     print("="*80)
     print("DATABASE DIFF: Schema-Aware Comparison")
     print("="*80)
     print(f"Old: {old_ref}")
-    print(f"New: {new_label}")
+    print(f"New: {new_ref}")
     if tables:
         print(f"Tables: {', '.join(tables)}")
     print()
@@ -663,18 +661,25 @@ def print_tree_structure(ref: Optional[str] = None, prolly_dir: str = '.prolly',
     tree._print_tree(label=label, verbose=verbose)
 
 
-def commonality_analysis(left_ref: str, right_ref: str, prolly_dir: str = '.prolly',
+def commonality_analysis(left_ref: Optional[str] = None, right_ref: Optional[str] = None,
+                         prolly_dir: str = '.prolly',
                          cache_size: Optional[int] = None):
     """
     Compute commonality between two commits or refs.
 
     Args:
-        left_ref: Left ref/commit
-        right_ref: Right ref/commit
+        left_ref: Left ref/commit (default: HEAD~)
+        right_ref: Right ref/commit (default: HEAD)
         prolly_dir: Repository directory
         cache_size: Cache size for cached stores
     """
     repo = _get_repo(prolly_dir, cache_size=cache_size or 1000)
+
+    # Default to HEAD~ vs HEAD
+    if left_ref is None:
+        left_ref = "HEAD~"
+    if right_ref is None:
+        right_ref = "HEAD"
 
     # Resolve left ref
     left_commit_hash = repo.resolve_ref(left_ref)
@@ -960,6 +965,9 @@ Examples:
   # Import specific tables
   python cli.py import-sqlite database.sqlite --tables buses generators
 
+  # Import in one big batch (faster, different tree structure)
+  python cli.py import-sqlite database.sqlite --batch-size 0
+
   # Import with custom message
   python cli.py import-sqlite database.sqlite --message "Import production data"
         ''')
@@ -972,7 +980,7 @@ Examples:
     import_parser.add_argument('--seed', type=int, default=42,
                         help='Random seed (default: 42)')
     import_parser.add_argument('--batch-size', type=int, default=1000,
-                        help='Batch size for inserts (default: 1000)')
+                        help='Batch size for inserts (0 = single batch, default: 1000)')
     import_parser.add_argument('--tables', nargs='+', default=None,
                         help='Specific table names to import')
     import_parser.add_argument('--message', default=None,
@@ -1043,20 +1051,24 @@ Examples:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
-  # Diff current HEAD with previous commit
-  python cli.py db-diff HEAD~1
+  # Diff HEAD with HEAD~ (default)
+  python cli.py db-diff
 
-  # Diff two refs
+  # Diff HEAD with two commits ago
+  python cli.py db-diff HEAD~2
+
+  # Diff two specific refs
   python cli.py db-diff main develop
 
   # Diff specific tables only
-  python cli.py db-diff main --tables buses generators
+  python cli.py db-diff --tables buses generators
 
   # Show detailed row changes
-  python cli.py db-diff HEAD~1 --verbose
+  python cli.py db-diff --verbose
         ''')
 
-    db_diff_parser.add_argument('old_ref', help='Old ref/commit')
+    db_diff_parser.add_argument('old_ref', nargs='?', default=None,
+                        help='Old ref/commit (default: HEAD~)')
     db_diff_parser.add_argument('new_ref', nargs='?', default=None,
                         help='New ref/commit (default: HEAD)')
     db_diff_parser.add_argument('--dir', default='.prolly',
@@ -1112,8 +1124,10 @@ Note: This shows structural node sharing. Trees created by incrementally modifyi
 one another will share most nodes (e.g., 94%% for a single key change). Trees built
 independently from the same data may have 0%% commonality due to different structure.
         ''')
-    commonality_parser.add_argument('left_ref', help='Left ref/commit')
-    commonality_parser.add_argument('right_ref', help='Right ref/commit')
+    commonality_parser.add_argument('left_ref', nargs='?', default=None,
+                        help='Left ref/commit (default: HEAD~)')
+    commonality_parser.add_argument('right_ref', nargs='?', default=None,
+                        help='Right ref/commit (default: HEAD)')
     commonality_parser.add_argument('--dir', default='.prolly',
                         help='Repository directory (default: .prolly)')
     commonality_parser.add_argument('--cache-size', type=int, default=None,
