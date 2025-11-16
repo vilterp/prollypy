@@ -47,7 +47,7 @@ class DB:
     - Table data at /d/<table_name>/<primary_key>
     """
 
-    def __init__(self, store: BlockStore, pattern: float = 0.0001, seed: int = 42, validate: bool = False):
+    def __init__(self, store: BlockStore, pattern: float = 0.01, seed: int = 42, validate: bool = False):
         """
         Initialize database with a BlockStore instance.
 

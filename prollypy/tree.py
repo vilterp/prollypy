@@ -16,13 +16,13 @@ from .cursor import TreeCursor
 
 
 class ProllyTree:
-    def __init__(self, pattern=0.0001, seed=42, store: Optional[BlockStore] = None, validate=False):
+    def __init__(self, pattern=0.01, seed=42, store: Optional[BlockStore] = None, validate=False):
         """
         Initialize ProllyTree with content-based splitting.
 
         Args:
-            pattern: Split probability (0.0 to 1.0). Lower = larger nodes.
-                    Default 0.0001 means ~10000 entries per node on average.
+            pattern: Split probability (0.0 to 1.0). Higher = smaller nodes, wider trees.
+                    Default 0.01 means ~100 entries per node on average.
             seed: Seed for rolling hash function for reproducibility
             store: Storage backend (defaults to MemoryBlockStore if not provided)
             validate: If True, validate node structure during tree building (slower)
@@ -296,7 +296,14 @@ class ProllyTree:
 
     def _build_internal_from_children(self, children: list[Node], verbose: bool = False) -> Node:
         """
-        Build internal node(s) from a list of children using rolling hash for splits.
+        Build a balanced internal tree from a list of children.
+
+        Uses a BALANCED DISTRIBUTION approach: instead of chunking children left-to-right,
+        we evenly distribute them across internal nodes to create a properly balanced tree.
+
+        Key insight: If we have 200 children and want fanout of 32:
+        - WRONG: [32][32][32][32][32][32][8] - creates right-skew
+        - RIGHT: Build 7 internal nodes with ~29 children each - all siblings equal
 
         Args:
             children: List of Node objects
@@ -311,95 +318,94 @@ class ProllyTree:
             # Single child - just return it (no need for parent)
             return children[0]
 
-        # Build internal nodes using rolling hash to determine split points
-        # Strategy: Don't split unless we have at least 2 children on BOTH sides
+        # Target fanout for internal nodes
+        # Smaller = deeper tree, but more balanced
+        # Larger = shallower tree, but potentially wider root
+        TARGET_FANOUT = 32
+        MIN_FANOUT = 8  # Don't create tiny nodes
+
+        # Calculate how many internal nodes we need at this level
+        # We want to distribute children EVENLY across internal nodes
+        num_internal_nodes = max(2, (len(children) + TARGET_FANOUT - 1) // TARGET_FANOUT)
+
+        # Calculate children per internal node (distribute evenly)
+        children_per_node = len(children) // num_internal_nodes
+        extra_children = len(children) % num_internal_nodes
+
+        # Build internal nodes with balanced distribution
         internal_nodes = []
-        current_internal = Node(is_leaf=False)
-        roll_hash = self.seed  # Start with seed
+        child_idx = 0
 
-        for i, child in enumerate(children):
-            # Store or reuse child hash
-            if hasattr(child, '_reused_hash'):
-                child_hash = getattr(child, '_reused_hash')
-                delattr(child, '_reused_hash')
-            else:
-                child_hash = self._store_node(child)
+        for node_num in range(num_internal_nodes):
+            # Some nodes get one extra child to distribute the remainder
+            node_size = children_per_node + (1 if node_num < extra_children else 0)
 
-            current_internal.values.append(child_hash)
+            # Don't create nodes that are too small (unless it's the only option)
+            if node_size < MIN_FANOUT and len(internal_nodes) > 0 and node_num == num_internal_nodes - 1:
+                # Last node is too small - merge with previous node
+                prev_node = internal_nodes[-1]
+                node_children = children[child_idx:child_idx + node_size]
 
-            # Update rolling hash with the child hash
-            roll_hash = self._rolling_hash(roll_hash, child_hash)
+                for child in node_children:
+                    # Store or reuse child hash
+                    if hasattr(child, '_reused_hash'):
+                        child_hash = getattr(child, '_reused_hash')
+                        delattr(child, '_reused_hash')
+                    else:
+                        child_hash = self._store_node(child)
 
-            # Add separator key (first key of next child)
-            if i < len(children) - 1:
-                next_child = children[i + 1]
-                # Get the first actual key from the next child's subtree
-                separator = self._get_first_key(next_child)
-                if separator is not None:
-                    current_internal.keys.append(separator)
+                    prev_node.values.append(child_hash)
 
-                    # Update rolling hash with separator key
-                    roll_hash = self._rolling_hash(roll_hash, separator)
+                    # Add separator key
+                    separator = self._get_first_key(child)
+                    if separator is not None and len(prev_node.keys) < len(prev_node.values) - 1:
+                        prev_node.keys.append(separator)
 
-                    # Check if we should split here using rolling hash
-                    # Require:
-                    # - At least 2 children in current node
-                    # - At least 2 children remaining (including next)
-                    MIN_CHILDREN = 2
-                    children_remaining = len(children) - i - 1
-                    if (roll_hash < self.pattern and
-                        len(current_internal.values) >= MIN_CHILDREN and
-                        children_remaining >= MIN_CHILDREN):
-                        # Split point! Validate and save current internal
-                        if self.validate:
-                            current_internal.validate(self.store, context="_build_internal_from_children (split)")
-                        internal_nodes.append(current_internal)
-                        current_internal = Node(is_leaf=False)
-                        roll_hash = self.seed  # Reset hash for next node
+                child_idx += node_size
+                continue
 
-        # Add the last internal node (but only if it has multiple children)
-        if current_internal.values:
-            if len(current_internal.values) == 1 and not internal_nodes:
-                # Only one child total - just return it directly
-                child_hash = current_internal.values[0]
-                child = self._get_node(child_hash)
-                if child is None:
-                    raise ValueError(f"Child node {child_hash} not found in store")
-                return child
-            elif len(current_internal.values) > 1:
-                # Validate before adding
-                if self.validate:
-                    current_internal.validate(self.store, context="_build_internal_from_children (end)")
-                internal_nodes.append(current_internal)
-            elif internal_nodes:
-                # Single child but we already have other nodes - validate and add it
-                if self.validate:
-                    current_internal.validate(self.store, context="_build_internal_from_children (single child)")
-                internal_nodes.append(current_internal)
+            # Create new internal node
+            internal_node = Node(is_leaf=False)
+            node_children = children[child_idx:child_idx + node_size]
 
-        # Handle edge cases
-        if len(internal_nodes) == 0:
-            raise ValueError("No internal nodes created")
-        elif len(internal_nodes) == 1:
-            # Single internal node
+            for i, child in enumerate(node_children):
+                # Store or reuse child hash
+                if hasattr(child, '_reused_hash'):
+                    child_hash = getattr(child, '_reused_hash')
+                    delattr(child, '_reused_hash')
+                else:
+                    child_hash = self._store_node(child)
+
+                internal_node.values.append(child_hash)
+
+                # Add separator key (first key of next child)
+                if i < len(node_children) - 1:
+                    next_child = node_children[i + 1]
+                    separator = self._get_first_key(next_child)
+                    if separator is not None:
+                        internal_node.keys.append(separator)
+
+            # Validate before adding
+            if self.validate:
+                internal_node.validate(self.store, context=f"_build_internal_from_children (node {node_num})")
+
+            internal_nodes.append(internal_node)
+            child_idx += node_size
+
+        # If we only created one internal node, return it directly
+        if len(internal_nodes) == 1:
             node = internal_nodes[0]
             if len(node.values) == 1:
-                # Unwrap single-child internal node - return the child directly
+                # Unwrap single-child internal node
                 child_hash = node.values[0]
                 child = self._get_node(child_hash)
                 if child is None:
                     raise ValueError(f"Child node {child_hash} not found in store")
                 return child
-            elif len(node.values) == 0:
-                raise ValueError("Internal node has no children")
-            else:
-                # Validate before returning
-                if self.validate:
-                    node.validate(self.store, context="_build_internal_from_children (return single)")
-                return node
-        else:
-            # Multiple internal nodes - build parent recursively
-            return self._build_internal_from_children(internal_nodes, verbose)
+            return node
+
+        # Multiple internal nodes - recursively build parent level
+        return self._build_internal_from_children(internal_nodes, verbose)
 
     def _merge_sorted(self, old_items: list[tuple[bytes, bytes]], new_items: list[tuple[bytes, bytes]]) -> list[tuple[bytes, bytes]]:
         """Merge two sorted lists of (key, value) tuples"""

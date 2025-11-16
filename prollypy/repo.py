@@ -27,7 +27,7 @@ class Commit:
     message: str  # Commit message
     timestamp: float  # Unix timestamp
     author: str  # Author name/email
-    pattern: float = 0.0001  # Split probability for the prolly tree
+    pattern: float = 0.01  # Split probability for the prolly tree
     seed: int = 42  # Seed for rolling hash function
 
     def to_dict(self) -> Dict:
@@ -51,7 +51,7 @@ class Commit:
             message=data['message'],
             timestamp=data['timestamp'],
             author=data['author'],
-            pattern=data.get('pattern', 0.0001),  # Default for backward compatibility
+            pattern=data.get('pattern', 0.01),  # Default for backward compatibility
             seed=data.get('seed', 42)  # Default for backward compatibility
         )
 
@@ -188,7 +188,7 @@ class SqliteCommitGraphStore:
                 message TEXT NOT NULL,
                 timestamp REAL NOT NULL,
                 author TEXT NOT NULL,
-                pattern REAL NOT NULL DEFAULT 0.0001,
+                pattern REAL NOT NULL DEFAULT 0.01,
                 seed INTEGER NOT NULL DEFAULT 42
             )
         """)
@@ -501,7 +501,7 @@ class Repo:
 
         # Inherit pattern and seed from parent if not specified
         if pattern is None:
-            pattern = head_commit.pattern if head_commit else 0.0001
+            pattern = head_commit.pattern if head_commit else 0.01
         if seed is None:
             seed = head_commit.seed if head_commit else 42
 

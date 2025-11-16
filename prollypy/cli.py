@@ -115,7 +115,7 @@ def log_commits(prolly_dir: str = '.prolly', ref: Optional[str] = None, max_coun
 
 
 def import_sqlite_to_repo(db_path: str, prolly_dir: str = '.prolly',
-                          pattern: float = 0.0001, seed: int = 42,
+                          pattern: float = 0.01, seed: int = 42,
                           batch_size: int = 1000, tables_filter: Optional[List[str]] = None,
                           verbose_batches: bool = False, validate: bool = False,
                           message: Optional[str] = None):
@@ -158,8 +158,8 @@ def import_sqlite_to_repo(db_path: str, prolly_dir: str = '.prolly',
         else:
             message = f"Import from {db_name}"
 
-    # Create commit
-    commit = repo.commit(root_hash, message)
+    # Create commit with the pattern and seed used for the import
+    commit = repo.commit(root_hash, message, pattern=pattern, seed=seed)
 
     print(f"\nCommit created: {commit.compute_hash().hex()[:8]}")
     print(f"Message: {message}")
@@ -434,7 +434,7 @@ def diff_trees(old_hash: str, new_hash: str,
             print(f"  {key}: {value}")
 
 
-def print_tree_structure(ref: str, prolly_dir: str = '.prolly',
+def print_tree_structure(ref: Optional[str] = None, prolly_dir: str = '.prolly',
                         cache_size: Optional[int] = None,
                         prefix: Optional[str] = None,
                         verbose: bool = False):
@@ -442,13 +442,17 @@ def print_tree_structure(ref: str, prolly_dir: str = '.prolly',
     Print the tree structure for a given ref or commit.
 
     Args:
-        ref: Ref name, commit hash, or "HEAD"
+        ref: Ref name, commit hash, or "HEAD" (default: "HEAD")
         prolly_dir: Repository directory
         cache_size: Cache size for cached stores
         prefix: Optional key prefix to filter tree visualization
         verbose: If True, show all leaf node values. If False, only show first/last keys and count.
     """
     repo = _get_repo(prolly_dir, cache_size=cache_size or 1000)
+
+    # Default to HEAD if no ref provided
+    if ref is None:
+        ref = "HEAD"
 
     # Resolve ref to commit
     commit_hash = repo.resolve_ref(ref)
@@ -796,8 +800,8 @@ Examples:
     import_parser.add_argument('database', help='Path to SQLite database file')
     import_parser.add_argument('--dir', default='.prolly',
                         help='Repository directory (default: .prolly)')
-    import_parser.add_argument('--pattern', type=float, default=0.0001,
-                        help='Split pattern (default: 0.0001)')
+    import_parser.add_argument('--pattern', type=float, default=0.01,
+                        help='Split pattern - higher = smaller nodes, wider trees (default: 0.01)')
     import_parser.add_argument('--seed', type=int, default=42,
                         help='Random seed (default: 42)')
     import_parser.add_argument('--batch-size', type=int, default=1000,
@@ -873,7 +877,7 @@ Examples:
         epilog='''
 Examples:
   # Print tree structure from HEAD (compact mode)
-  python cli.py print-tree HEAD
+  python cli.py print-tree
 
   # Print tree from a branch
   python cli.py print-tree main
@@ -882,10 +886,10 @@ Examples:
   python cli.py print-tree a16b213f --verbose
 
   # Print tree with prefix label
-  python cli.py print-tree HEAD --prefix /d/buses
+  python cli.py print-tree --prefix /d/buses
         ''')
 
-    print_tree_parser.add_argument('ref', help='Ref name, commit hash, or "HEAD"')
+    print_tree_parser.add_argument('ref', nargs='?', default=None, help='Ref name, commit hash, or "HEAD" (default: HEAD)')
     print_tree_parser.add_argument('--dir', default='.prolly',
                         help='Repository directory (default: .prolly)')
     print_tree_parser.add_argument('--cache-size', type=int, default=None,

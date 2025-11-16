@@ -192,7 +192,7 @@ def import_sqlite_table(db: DB, sqlite_conn: sqlite3.Connection, table_name: str
 
 
 def import_sqlite_database(db_path: str, store: BlockStore,
-                           pattern: float = 0.0001, seed: int = 42,
+                           pattern: float = 0.01, seed: int = 42,
                            batch_size: int = 1000,
                            tables_filter: Optional[List[str]] = None,
                            verbose_batches: bool = False,
