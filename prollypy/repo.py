@@ -27,6 +27,8 @@ class Commit:
     message: str  # Commit message
     timestamp: float  # Unix timestamp
     author: str  # Author name/email
+    pattern: float = 0.0001  # Split probability for the prolly tree
+    seed: int = 42  # Seed for rolling hash function
 
     def to_dict(self) -> Dict:
         """Convert commit to dictionary for serialization."""
@@ -35,7 +37,9 @@ class Commit:
             'parents': [p.hex() for p in self.parents],
             'message': self.message,
             'timestamp': self.timestamp,
-            'author': self.author
+            'author': self.author,
+            'pattern': self.pattern,
+            'seed': self.seed
         }
 
     @classmethod
@@ -46,7 +50,9 @@ class Commit:
             parents=[bytes.fromhex(p) for p in data['parents']],
             message=data['message'],
             timestamp=data['timestamp'],
-            author=data['author']
+            author=data['author'],
+            pattern=data.get('pattern', 0.0001),  # Default for backward compatibility
+            seed=data.get('seed', 42)  # Default for backward compatibility
         )
 
     def compute_hash(self) -> bytes:
@@ -181,7 +187,9 @@ class SqliteCommitGraphStore:
                 tree_root BLOB NOT NULL,
                 message TEXT NOT NULL,
                 timestamp REAL NOT NULL,
-                author TEXT NOT NULL
+                author TEXT NOT NULL,
+                pattern REAL NOT NULL DEFAULT 0.0001,
+                seed INTEGER NOT NULL DEFAULT 42
             )
         """)
 
@@ -221,9 +229,9 @@ class SqliteCommitGraphStore:
 
         # Insert commit
         cursor.execute("""
-            INSERT OR REPLACE INTO commits (hash, tree_root, message, timestamp, author)
-            VALUES (?, ?, ?, ?, ?)
-        """, (commit_hash, commit.tree_root, commit.message, commit.timestamp, commit.author))
+            INSERT OR REPLACE INTO commits (hash, tree_root, message, timestamp, author, pattern, seed)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (commit_hash, commit.tree_root, commit.message, commit.timestamp, commit.author, commit.pattern, commit.seed))
 
         # Delete existing parents (in case of replacement)
         cursor.execute("DELETE FROM commit_parents WHERE commit_hash = ?", (commit_hash,))
@@ -243,7 +251,7 @@ class SqliteCommitGraphStore:
 
         # Get commit data
         cursor.execute("""
-            SELECT tree_root, message, timestamp, author
+            SELECT tree_root, message, timestamp, author, pattern, seed
             FROM commits
             WHERE hash = ?
         """, (commit_hash,))
@@ -252,7 +260,7 @@ class SqliteCommitGraphStore:
         if not row:
             return None
 
-        tree_root, message, timestamp, author = row
+        tree_root, message, timestamp, author, pattern, seed = row
 
         # Get parents
         cursor.execute("""
@@ -269,7 +277,9 @@ class SqliteCommitGraphStore:
             parents=parents,
             message=message,
             timestamp=timestamp,
-            author=author
+            author=author,
+            pattern=pattern,
+            seed=seed
         )
 
     def get_parents(self, commit_hash: bytes) -> List[bytes]:
@@ -470,7 +480,8 @@ class Repo:
 
         self.commit_graph_store.set_head(ref_name)
 
-    def commit(self, new_head_tree: bytes, message: str, author: Optional[str] = None) -> Commit:
+    def commit(self, new_head_tree: bytes, message: str, author: Optional[str] = None,
+               pattern: Optional[float] = None, seed: Optional[int] = None) -> Commit:
         """
         Create a new commit with the given tree root.
 
@@ -478,6 +489,8 @@ class Repo:
             new_head_tree: Hash of the prolly tree root for this commit
             message: Commit message
             author: Author name/email. Uses default if not provided.
+            pattern: Split probability for the prolly tree. If None, inherits from parent.
+            seed: Seed for rolling hash function. If None, inherits from parent.
 
         Returns:
             The newly created Commit object
@@ -486,13 +499,21 @@ class Repo:
         head_commit, ref_name = self.get_head()
         parents = [head_commit.compute_hash()] if head_commit else []
 
+        # Inherit pattern and seed from parent if not specified
+        if pattern is None:
+            pattern = head_commit.pattern if head_commit else 0.0001
+        if seed is None:
+            seed = head_commit.seed if head_commit else 42
+
         # Create new commit
         new_commit = Commit(
             tree_root=new_head_tree,
             parents=parents,
             message=message,
             timestamp=time.time(),
-            author=author or self.default_author
+            author=author or self.default_author,
+            pattern=pattern,
+            seed=seed
         )
 
         # Compute commit hash and store it

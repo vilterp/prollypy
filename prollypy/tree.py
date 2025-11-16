@@ -16,13 +16,13 @@ from .cursor import TreeCursor
 
 
 class ProllyTree:
-    def __init__(self, pattern=0.25, seed=42, store: Optional[BlockStore] = None, validate=False):
+    def __init__(self, pattern=0.0001, seed=42, store: Optional[BlockStore] = None, validate=False):
         """
         Initialize ProllyTree with content-based splitting.
 
         Args:
             pattern: Split probability (0.0 to 1.0). Lower = larger nodes.
-                    Default 0.25 means ~4 entries per node on average.
+                    Default 0.0001 means ~10000 entries per node on average.
             seed: Seed for rolling hash function for reproducibility
             store: Storage backend (defaults to MemoryBlockStore if not provided)
             validate: If True, validate node structure during tree building (slower)
