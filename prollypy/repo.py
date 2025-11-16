@@ -91,6 +91,18 @@ class CommitGraphStore(Protocol):
         """Get the branch name that HEAD points to. Returns None if not set."""
         ...
 
+    def find_commit_by_prefix(self, prefix: str) -> Optional[bytes]:
+        """
+        Find a commit by its hash prefix (partial hash).
+
+        Args:
+            prefix: Hex string prefix of the commit hash
+
+        Returns:
+            Full commit hash if exactly one match is found, None otherwise
+        """
+        ...
+
 
 class MemoryCommitGraphStore:
     """In-memory implementation of CommitGraphStore."""
@@ -132,6 +144,16 @@ class MemoryCommitGraphStore:
     def get_head(self) -> Optional[str]:
         """Get the branch name that HEAD points to."""
         return self.head
+
+    def find_commit_by_prefix(self, prefix: str) -> Optional[bytes]:
+        """Find a commit by its hash prefix."""
+        prefix_lower = prefix.lower()
+        matches = [
+            commit_hash
+            for commit_hash in self.commits.keys()
+            if commit_hash.hex().startswith(prefix_lower)
+        ]
+        return matches[0] if len(matches) == 1 else None
 
 
 class SqliteCommitGraphStore:
@@ -299,6 +321,20 @@ class SqliteCommitGraphStore:
         cursor.execute("SELECT value FROM metadata WHERE key = 'HEAD'")
         row = cursor.fetchone()
         return row[0] if row else None
+
+    def find_commit_by_prefix(self, prefix: str) -> Optional[bytes]:
+        """Find a commit by its hash prefix."""
+        cursor = self.conn.cursor()
+        # Use LIKE with hex prefix pattern
+        # Convert prefix to uppercase to match SQLite's hex() output
+        prefix_upper = prefix.upper()
+        pattern = f"{prefix_upper}%"
+        cursor.execute("""
+            SELECT hash FROM commits
+            WHERE hex(hash) LIKE ?
+        """, (pattern,))
+        matches = cursor.fetchall()
+        return matches[0][0] if len(matches) == 1 else None
 
     def close(self):
         """Close the database connection."""
@@ -480,18 +516,31 @@ class Repo:
         """
         Resolve a ref name or commit hash to a commit hash.
 
+        Supports:
+        - Branch/tag names (e.g., "main", "develop")
+        - "HEAD" - resolves to the commit of the current HEAD ref
+        - Full commit hashes (64 hex characters)
+        - Partial commit hashes (e.g., "341e719a") - must match exactly one commit
+
         Args:
-            ref: Either a branch name or a commit hash (as hex string)
+            ref: Branch name, "HEAD", or commit hash (full or partial hex string)
 
         Returns:
             Commit hash bytes, or None if not found
         """
-        # Try as a ref first
+        # Handle HEAD specially
+        if ref == "HEAD":
+            head_commit, _ = self.get_head()
+            if head_commit is None:
+                return None
+            return head_commit.compute_hash()
+
+        # Try as a ref (branch/tag) first
         commit_hash = self.commit_graph_store.get_ref(ref)
         if commit_hash is not None:
             return commit_hash
 
-        # Try as a commit hash
+        # Try as a full commit hash
         try:
             commit_hash = bytes.fromhex(ref)
             # Verify it exists
@@ -499,6 +548,12 @@ class Repo:
                 return commit_hash
         except ValueError:
             pass
+
+        # Try as a partial commit hash
+        if all(c in '0123456789abcdefABCDEF' for c in ref):
+            partial_match = self.commit_graph_store.find_commit_by_prefix(ref)
+            if partial_match is not None:
+                return partial_match
 
         return None
 

@@ -481,29 +481,50 @@ def print_tree_structure(root_hash: str, store_spec: str = 'cached-file://.proll
     tree._print_tree(label=label, verbose=verbose)
 
 
-def commonality_analysis(left_hash: str, right_hash: str, store_spec: str = 'cached-file://.prolly',
+def commonality_analysis(left_ref: str, right_ref: str, prolly_dir: str = '.prolly',
                          cache_size: Optional[int] = None):
     """
-    Compute commonality between two tree roots.
+    Compute commonality between two commits or refs.
 
     Args:
-        left_hash: Root hash of left tree
-        right_hash: Root hash of right tree
-        store_spec: Store specification
+        left_ref: Left ref/commit
+        right_ref: Right ref/commit
+        prolly_dir: Repository directory
         cache_size: Cache size for cached stores
     """
-    print(f"Opening store: {store_spec}")
-    store = create_store_from_spec(store_spec, cache_size=cache_size)
+    repo = _get_repo(prolly_dir, cache_size=cache_size or 1000)
 
-    # Convert hex strings to bytes
-    left_hash_bytes = bytes.fromhex(left_hash)
-    right_hash_bytes = bytes.fromhex(right_hash)
+    # Resolve left ref
+    left_commit_hash = repo.resolve_ref(left_ref)
+    if left_commit_hash is None:
+        print(f"Error: Ref '{left_ref}' not found")
+        return
+    left_commit = repo.get_commit(left_commit_hash)
+    if left_commit is None:
+        print(f"Error: Commit not found")
+        return
+    left_tree_root = left_commit.tree_root
+
+    # Resolve right ref
+    right_commit_hash = repo.resolve_ref(right_ref)
+    if right_commit_hash is None:
+        print(f"Error: Ref '{right_ref}' not found")
+        return
+    right_commit = repo.get_commit(right_commit_hash)
+    if right_commit is None:
+        print(f"Error: Commit not found")
+        return
+    right_tree_root = right_commit.tree_root
+
+    print(f"Left ref:  {left_ref} -> commit {left_commit_hash.hex()[:8]}")
+    print(f"Right ref: {right_ref} -> commit {right_commit_hash.hex()[:8]}")
+    print()
 
     # Compute commonality
-    stats = compute_commonality(store, left_hash_bytes, right_hash_bytes)
+    stats = compute_commonality(repo.block_store, left_tree_root, right_tree_root)
 
-    # Print report
-    print_commonality_report(left_hash, right_hash, stats)
+    # Print report (using tree root hashes for display)
+    print_commonality_report(left_tree_root.hex(), right_tree_root.hex(), stats)
 
 
 def get_key_from_repo(key: str, ref: Optional[str] = None, prolly_dir: str = '.prolly',
@@ -864,21 +885,27 @@ Examples:
                         help='Show all leaf node values (default: only show first/last keys and count)')
 
     # Commonality subcommand
-    commonality_parser = subparsers.add_parser('commonality', help='Compare two tree roots (Venn diagram)',
+    commonality_parser = subparsers.add_parser('commonality', help='Compare two commits/refs (Venn diagram)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
-  # Compare two trees
-  python cli.py commonality 1395402e5fd71b2d 3005a56aaed3813a --store cached-file://.prolly
+  # Compare two commits
+  python cli.py commonality abc123 def456
+
+  # Compare two refs
+  python cli.py commonality main develop
+
+  # Compare HEAD with a ref
+  python cli.py commonality HEAD main
 
 Note: This shows structural node sharing. Trees created by incrementally modifying
 one another will share most nodes (e.g., 94%% for a single key change). Trees built
 independently from the same data may have 0%% commonality due to different structure.
         ''')
-    commonality_parser.add_argument('left_hash', help='Root hash of left tree')
-    commonality_parser.add_argument('right_hash', help='Root hash of right tree')
-    commonality_parser.add_argument('--store', default='cached-file://.prolly',
-                        help='Store spec (default: cached-file://.prolly)')
+    commonality_parser.add_argument('left_ref', help='Left ref/commit')
+    commonality_parser.add_argument('right_ref', help='Right ref/commit')
+    commonality_parser.add_argument('--dir', default='.prolly',
+                        help='Repository directory (default: .prolly)')
     commonality_parser.add_argument('--cache-size', type=int, default=None,
                         help='Cache size for cached stores')
 
@@ -1003,9 +1030,9 @@ to preview what will be removed before actually removing it.
         )
     elif args.command == 'commonality':
         commonality_analysis(
-            left_hash=args.left_hash,
-            right_hash=args.right_hash,
-            store_spec=args.store,
+            left_ref=args.left_ref,
+            right_ref=args.right_ref,
+            prolly_dir=args.dir,
             cache_size=args.cache_size
         )
     elif args.command == 'get':
