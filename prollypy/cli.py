@@ -187,6 +187,7 @@ def dump_from_repo(ref: Optional[str] = None, prolly_dir: str = '.prolly',
         if head_commit is None:
             print("Error: No commits in repository")
             return
+        commit = head_commit
         root_hash_bytes = head_commit.tree_root
         print(f"Dumping from HEAD ({ref_name})")
     else:
@@ -203,8 +204,8 @@ def dump_from_repo(ref: Optional[str] = None, prolly_dir: str = '.prolly',
 
     print(f"Tree root hash: {root_hash_bytes.hex()}")
 
-    # Create tree
-    tree = ProllyTree(pattern=0.0001, seed=42, store=repo.block_store)
+    # Create tree with pattern and seed from commit
+    tree = ProllyTree(pattern=commit.pattern, seed=commit.seed, store=repo.block_store)
 
     root_node = repo.block_store.get_node(root_hash_bytes)
     if not root_node:
@@ -471,8 +472,8 @@ def print_tree_structure(ref: str, prolly_dir: str = '.prolly',
     if not verbose:
         print(f"Mode:      compact (use --verbose to show all leaf values)")
 
-    # Create tree and load from root hash
-    tree = ProllyTree(pattern=0.0001, seed=42, store=repo.block_store)
+    # Create tree with pattern and seed from commit
+    tree = ProllyTree(pattern=commit.pattern, seed=commit.seed, store=repo.block_store)
     root_node = repo.block_store.get_node(tree_root)
 
     if not root_node:
@@ -571,8 +572,8 @@ def get_key_from_repo(key: str, ref: Optional[str] = None, prolly_dir: str = '.p
         tree_root = commit.tree_root
         ref_display = ref
 
-    # Load tree
-    tree = ProllyTree(pattern=0.0001, seed=42, store=repo.block_store)
+    # Load tree with pattern and seed from commit
+    tree = ProllyTree(pattern=commit.pattern, seed=commit.seed, store=repo.block_store)
     root_node = repo.block_store.get_node(tree_root)
     if root_node is None:
         print(f"Error: Tree root not found in store")
@@ -617,8 +618,8 @@ def set_key_in_repo(key: str, value: str, message: Optional[str] = None,
         print("Error: No commits in repository. Use 'init' first.")
         return
 
-    # Load current tree
-    tree = ProllyTree(pattern=0.0001, seed=42, store=repo.block_store)
+    # Load current tree with pattern and seed from commit
+    tree = ProllyTree(pattern=head_commit.pattern, seed=head_commit.seed, store=repo.block_store)
     root_node = repo.block_store.get_node(head_commit.tree_root)
     if root_node is None:
         print(f"Error: Tree root not found in store")
