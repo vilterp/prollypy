@@ -546,6 +546,12 @@ def db_diff_refs(old_ref: str, new_ref: Optional[str] = None,
             print(f"\n{table_name}:")
             print(f"  {table_diff.summary()}")
 
+            # Show column change statistics
+            if table_diff.column_change_counts:
+                print(f"\n  Column change counts:")
+                for line in table_diff.column_stats_summary().split('\n'):
+                    print(f"    {line}")
+
             if verbose and (table_diff.added_rows or table_diff.removed_rows or table_diff.modified_rows):
                 if table_diff.added_rows:
                     print(f"\n  Added rows ({len(table_diff.added_rows)}):")
