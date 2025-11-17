@@ -15,6 +15,7 @@ from typing import Optional, List
 from .db import DB
 from .store import create_store_from_spec, CachedFSBlockStore, BlockStore
 from .diff import Differ, Added, Deleted, Modified
+from .db_diff import diff_db, DBDiff, TableDiff
 from .sqlite_import import import_sqlite_database, import_sqlite_table, validate_tree_sorted
 from .commonality import compute_commonality, print_commonality_report
 from .store_gc import garbage_collect, find_garbage_nodes, GCStats
@@ -115,7 +116,7 @@ def log_commits(prolly_dir: str = '.prolly', ref: Optional[str] = None, max_coun
 
 
 def import_sqlite_to_repo(db_path: str, prolly_dir: str = '.prolly',
-                          pattern: float = 0.0001, seed: int = 42,
+                          pattern: float = 0.01, seed: int = 42,
                           batch_size: int = 1000, tables_filter: Optional[List[str]] = None,
                           verbose_batches: bool = False, validate: bool = False,
                           message: Optional[str] = None):
@@ -158,8 +159,8 @@ def import_sqlite_to_repo(db_path: str, prolly_dir: str = '.prolly',
         else:
             message = f"Import from {db_name}"
 
-    # Create commit
-    commit = repo.commit(root_hash, message)
+    # Create commit with the pattern and seed used for the import
+    commit = repo.commit(root_hash, message, pattern=pattern, seed=seed)
 
     print(f"\nCommit created: {commit.compute_hash().hex()[:8]}")
     print(f"Message: {message}")
@@ -227,7 +228,7 @@ def dump_from_repo(ref: Optional[str] = None, prolly_dir: str = '.prolly',
     print(f"\nTotal: {count:,} keys found")
 
 
-def diff_refs(old_ref: str, new_ref: Optional[str] = None,
+def diff_refs(old_ref: Optional[str] = None, new_ref: Optional[str] = None,
               prolly_dir: str = '.prolly',
               limit: Optional[int] = None,
               prefix: Optional[str] = None):
@@ -235,13 +236,19 @@ def diff_refs(old_ref: str, new_ref: Optional[str] = None,
     Diff two refs or commits.
 
     Args:
-        old_ref: First ref/commit
+        old_ref: First ref/commit (default: HEAD~)
         new_ref: Second ref/commit (default: HEAD)
         prolly_dir: Repository directory
         limit: Maximum number of diff events to display
         prefix: Optional key prefix to filter diff results
     """
     repo = _get_repo(prolly_dir)
+
+    # Default to HEAD~ vs HEAD
+    if old_ref is None:
+        old_ref = "HEAD~"
+    if new_ref is None:
+        new_ref = "HEAD"
 
     # Resolve old_ref
     old_commit_hash = repo.resolve_ref(old_ref)
@@ -434,7 +441,171 @@ def diff_trees(old_hash: str, new_hash: str,
             print(f"  {key}: {value}")
 
 
-def print_tree_structure(ref: str, prolly_dir: str = '.prolly',
+def db_diff_refs(old_ref: Optional[str] = None, new_ref: Optional[str] = None,
+                 prolly_dir: str = '.prolly',
+                 tables: Optional[List[str]] = None,
+                 verbose: bool = False):
+    """
+    Schema-aware diff of two database commits.
+
+    Args:
+        old_ref: First ref/commit (default: HEAD~)
+        new_ref: Second ref/commit (default: HEAD)
+        prolly_dir: Repository directory
+        tables: Optional list of table names to diff
+        verbose: If True, show detailed row changes
+    """
+    repo = _get_repo(prolly_dir)
+
+    # Default to HEAD~ vs HEAD
+    if old_ref is None:
+        old_ref = "HEAD~"
+    if new_ref is None:
+        new_ref = "HEAD"
+
+    # Resolve old_ref
+    old_commit_hash = repo.resolve_ref(old_ref)
+    if old_commit_hash is None:
+        print(f"Error: Ref '{old_ref}' not found")
+        return
+    old_commit = repo.get_commit(old_commit_hash)
+    if old_commit is None:
+        print(f"Error: Commit not found")
+        return
+
+    # Resolve new_ref
+    new_commit_hash = repo.resolve_ref(new_ref)
+    if new_commit_hash is None:
+        print(f"Error: Ref '{new_ref}' not found")
+        return
+    new_commit = repo.get_commit(new_commit_hash)
+    if new_commit is None:
+        print(f"Error: Commit not found")
+        return
+
+    print("="*80)
+    print("DATABASE DIFF: Schema-Aware Comparison")
+    print("="*80)
+    print(f"Old: {old_ref}")
+    print(f"New: {new_ref}")
+    if tables:
+        print(f"Tables: {', '.join(tables)}")
+    print()
+
+    # Create DB instances from commits
+    old_db = DB(store=repo.block_store, pattern=old_commit.pattern, seed=old_commit.seed)
+    old_tree = ProllyTree(pattern=old_commit.pattern, seed=old_commit.seed, store=repo.block_store)
+    old_root = repo.block_store.get_node(old_commit.tree_root)
+    if old_root:
+        old_tree.root = old_root
+        old_db.tree = old_tree
+
+    new_db = DB(store=repo.block_store, pattern=new_commit.pattern, seed=new_commit.seed)
+    new_tree = ProllyTree(pattern=new_commit.pattern, seed=new_commit.seed, store=repo.block_store)
+    new_root = repo.block_store.get_node(new_commit.tree_root)
+    if new_root:
+        new_tree.root = new_root
+        new_db.tree = new_tree
+
+    # Perform schema-aware diff
+    db_diff_result = diff_db(old_db, new_db, tables=tables)
+
+    # Print results
+    if not db_diff_result.has_changes:
+        print("No changes detected")
+        return
+
+    # Added tables
+    if db_diff_result.added_tables:
+        print("="*80)
+        print("ADDED TABLES")
+        print("="*80)
+        for table_name in db_diff_result.added_tables:
+            table = new_db.get_table(table_name)
+            row_count = new_db.count_rows(table_name)
+            print(f"  + {table_name} ({row_count} rows)")
+            if table:
+                print(f"    Columns: {', '.join(table.columns)}")
+        print()
+
+    # Removed tables
+    if db_diff_result.removed_tables:
+        print("="*80)
+        print("REMOVED TABLES")
+        print("="*80)
+        for table_name in db_diff_result.removed_tables:
+            table = old_db.get_table(table_name)
+            row_count = old_db.count_rows(table_name)
+            print(f"  - {table_name} ({row_count} rows)")
+            if table:
+                print(f"    Columns: {', '.join(table.columns)}")
+        print()
+
+    # Modified tables
+    if db_diff_result.modified_tables:
+        print("="*80)
+        print("MODIFIED TABLES")
+        print("="*80)
+        for table_name, table_diff in sorted(db_diff_result.modified_tables.items()):
+            print(f"\n{table_name}:")
+            print(f"  {table_diff.summary()}")
+
+            # Show column change statistics
+            if table_diff.column_change_counts:
+                print(f"\n  Column change counts:")
+                for line in table_diff.column_stats_summary().split('\n'):
+                    print(f"    {line}")
+
+            if verbose and (table_diff.added_rows or table_diff.removed_rows or table_diff.modified_rows):
+                if table_diff.added_rows:
+                    print(f"\n  Added rows ({len(table_diff.added_rows)}):")
+                    for row in table_diff.added_rows[:10]:  # Show first 10
+                        print(f"    + PK={row.primary_key}")
+                        if row.new_values:
+                            for col, val in list(row.new_values.items())[:5]:
+                                print(f"        {col} = {val}")
+                    if len(table_diff.added_rows) > 10:
+                        print(f"    ... and {len(table_diff.added_rows) - 10} more")
+
+                if table_diff.removed_rows:
+                    print(f"\n  Removed rows ({len(table_diff.removed_rows)}):")
+                    for row in table_diff.removed_rows[:10]:
+                        print(f"    - PK={row.primary_key}")
+                    if len(table_diff.removed_rows) > 10:
+                        print(f"    ... and {len(table_diff.removed_rows) - 10} more")
+
+                if table_diff.modified_rows:
+                    print(f"\n  Modified rows ({len(table_diff.modified_rows)}):")
+                    for row in table_diff.modified_rows[:10]:
+                        print(f"    ~ PK={row.primary_key}")
+                        print(f"      Changed columns: {', '.join(sorted(row.changed_columns))}")
+                        if verbose:
+                            for col in sorted(row.changed_columns):
+                                old_val = row.old_values.get(col) if row.old_values else None
+                                new_val = row.new_values.get(col) if row.new_values else None
+                                print(f"        {col}: {old_val} -> {new_val}")
+                    if len(table_diff.modified_rows) > 10:
+                        print(f"    ... and {len(table_diff.modified_rows) - 10} more")
+
+    # Summary
+    print("\n" + "="*80)
+    print("SUMMARY")
+    print("="*80)
+    print(f"Added tables:    {len(db_diff_result.added_tables)}")
+    print(f"Removed tables:  {len(db_diff_result.removed_tables)}")
+    print(f"Modified tables: {len(db_diff_result.modified_tables)}")
+
+    total_added_rows = sum(len(t.added_rows) for t in db_diff_result.modified_tables.values())
+    total_removed_rows = sum(len(t.removed_rows) for t in db_diff_result.modified_tables.values())
+    total_modified_rows = sum(len(t.modified_rows) for t in db_diff_result.modified_tables.values())
+
+    print(f"\nRow changes across all tables:")
+    print(f"  Added:    {total_added_rows:,}")
+    print(f"  Removed:  {total_removed_rows:,}")
+    print(f"  Modified: {total_modified_rows:,}")
+
+
+def print_tree_structure(ref: Optional[str] = None, prolly_dir: str = '.prolly',
                         cache_size: Optional[int] = None,
                         prefix: Optional[str] = None,
                         verbose: bool = False):
@@ -442,13 +613,17 @@ def print_tree_structure(ref: str, prolly_dir: str = '.prolly',
     Print the tree structure for a given ref or commit.
 
     Args:
-        ref: Ref name, commit hash, or "HEAD"
+        ref: Ref name, commit hash, or "HEAD" (default: "HEAD")
         prolly_dir: Repository directory
         cache_size: Cache size for cached stores
         prefix: Optional key prefix to filter tree visualization
         verbose: If True, show all leaf node values. If False, only show first/last keys and count.
     """
     repo = _get_repo(prolly_dir, cache_size=cache_size or 1000)
+
+    # Default to HEAD if no ref provided
+    if ref is None:
+        ref = "HEAD"
 
     # Resolve ref to commit
     commit_hash = repo.resolve_ref(ref)
@@ -492,18 +667,25 @@ def print_tree_structure(ref: str, prolly_dir: str = '.prolly',
     tree._print_tree(label=label, verbose=verbose)
 
 
-def commonality_analysis(left_ref: str, right_ref: str, prolly_dir: str = '.prolly',
+def commonality_analysis(left_ref: Optional[str] = None, right_ref: Optional[str] = None,
+                         prolly_dir: str = '.prolly',
                          cache_size: Optional[int] = None):
     """
     Compute commonality between two commits or refs.
 
     Args:
-        left_ref: Left ref/commit
-        right_ref: Right ref/commit
+        left_ref: Left ref/commit (default: HEAD~)
+        right_ref: Right ref/commit (default: HEAD)
         prolly_dir: Repository directory
         cache_size: Cache size for cached stores
     """
     repo = _get_repo(prolly_dir, cache_size=cache_size or 1000)
+
+    # Default to HEAD~ vs HEAD
+    if left_ref is None:
+        left_ref = "HEAD~"
+    if right_ref is None:
+        right_ref = "HEAD"
 
     # Resolve left ref
     left_commit_hash = repo.resolve_ref(left_ref)
@@ -789,6 +971,9 @@ Examples:
   # Import specific tables
   python cli.py import-sqlite database.sqlite --tables buses generators
 
+  # Import in one big batch (faster, different tree structure)
+  python cli.py import-sqlite database.sqlite --batch-size 0
+
   # Import with custom message
   python cli.py import-sqlite database.sqlite --message "Import production data"
         ''')
@@ -796,12 +981,12 @@ Examples:
     import_parser.add_argument('database', help='Path to SQLite database file')
     import_parser.add_argument('--dir', default='.prolly',
                         help='Repository directory (default: .prolly)')
-    import_parser.add_argument('--pattern', type=float, default=0.0001,
-                        help='Split pattern (default: 0.0001)')
+    import_parser.add_argument('--pattern', type=float, default=0.01,
+                        help='Split pattern - higher = smaller nodes, wider trees (default: 0.01)')
     import_parser.add_argument('--seed', type=int, default=42,
                         help='Random seed (default: 42)')
     import_parser.add_argument('--batch-size', type=int, default=1000,
-                        help='Batch size for inserts (default: 1000)')
+                        help='Batch size for inserts (0 = single batch, default: 1000)')
     import_parser.add_argument('--tables', nargs='+', default=None,
                         help='Specific table names to import')
     import_parser.add_argument('--message', default=None,
@@ -841,6 +1026,9 @@ Examples:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
+  # Diff HEAD with HEAD~ (default)
+  python cli.py diff
+
   # Diff a ref with HEAD
   python cli.py diff main
 
@@ -857,7 +1045,8 @@ Examples:
   python cli.py diff main develop --prefix /d/table_name
         ''')
 
-    diff_parser.add_argument('old_ref', help='Old ref/commit')
+    diff_parser.add_argument('old_ref', nargs='?', default=None,
+                        help='Old ref/commit (default: HEAD~)')
     diff_parser.add_argument('new_ref', nargs='?', default=None,
                         help='New ref/commit (default: HEAD)')
     diff_parser.add_argument('--dir', default='.prolly',
@@ -867,13 +1056,45 @@ Examples:
     diff_parser.add_argument('--prefix', type=str, default=None,
                         help='Key prefix to filter diff results')
 
+    # DB-diff subcommand (schema-aware diff)
+    db_diff_parser = subparsers.add_parser('db-diff', help='Schema-aware database diff',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  # Diff HEAD with HEAD~ (default)
+  python cli.py db-diff
+
+  # Diff HEAD with two commits ago
+  python cli.py db-diff HEAD~2
+
+  # Diff two specific refs
+  python cli.py db-diff main develop
+
+  # Diff specific tables only
+  python cli.py db-diff --tables buses generators
+
+  # Show detailed row changes
+  python cli.py db-diff --verbose
+        ''')
+
+    db_diff_parser.add_argument('old_ref', nargs='?', default=None,
+                        help='Old ref/commit (default: HEAD~)')
+    db_diff_parser.add_argument('new_ref', nargs='?', default=None,
+                        help='New ref/commit (default: HEAD)')
+    db_diff_parser.add_argument('--dir', default='.prolly',
+                        help='Repository directory (default: .prolly)')
+    db_diff_parser.add_argument('--tables', nargs='+', default=None,
+                        help='Specific tables to diff (default: all tables)')
+    db_diff_parser.add_argument('--verbose', action='store_true',
+                        help='Show detailed row changes (default: summary only)')
+
     # Print-tree subcommand
     print_tree_parser = subparsers.add_parser('print-tree', help='Print tree structure for a ref/commit',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
   # Print tree structure from HEAD (compact mode)
-  python cli.py print-tree HEAD
+  python cli.py print-tree
 
   # Print tree from a branch
   python cli.py print-tree main
@@ -882,10 +1103,10 @@ Examples:
   python cli.py print-tree a16b213f --verbose
 
   # Print tree with prefix label
-  python cli.py print-tree HEAD --prefix /d/buses
+  python cli.py print-tree --prefix /d/buses
         ''')
 
-    print_tree_parser.add_argument('ref', help='Ref name, commit hash, or "HEAD"')
+    print_tree_parser.add_argument('ref', nargs='?', default=None, help='Ref name, commit hash, or "HEAD" (default: HEAD)')
     print_tree_parser.add_argument('--dir', default='.prolly',
                         help='Repository directory (default: .prolly)')
     print_tree_parser.add_argument('--cache-size', type=int, default=None,
@@ -913,8 +1134,10 @@ Note: This shows structural node sharing. Trees created by incrementally modifyi
 one another will share most nodes (e.g., 94%% for a single key change). Trees built
 independently from the same data may have 0%% commonality due to different structure.
         ''')
-    commonality_parser.add_argument('left_ref', help='Left ref/commit')
-    commonality_parser.add_argument('right_ref', help='Right ref/commit')
+    commonality_parser.add_argument('left_ref', nargs='?', default=None,
+                        help='Left ref/commit (default: HEAD~)')
+    commonality_parser.add_argument('right_ref', nargs='?', default=None,
+                        help='Right ref/commit (default: HEAD)')
     commonality_parser.add_argument('--dir', default='.prolly',
                         help='Repository directory (default: .prolly)')
     commonality_parser.add_argument('--cache-size', type=int, default=None,
@@ -1030,6 +1253,14 @@ to preview what will be removed before actually removing it.
             prolly_dir=args.dir,
             limit=args.limit,
             prefix=args.prefix
+        )
+    elif args.command == 'db-diff':
+        db_diff_refs(
+            old_ref=args.old_ref,
+            new_ref=args.new_ref,
+            prolly_dir=args.dir,
+            tables=args.tables,
+            verbose=args.verbose
         )
     elif args.command == 'print-tree':
         print_tree_structure(

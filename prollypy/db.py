@@ -47,7 +47,7 @@ class DB:
     - Table data at /d/<table_name>/<primary_key>
     """
 
-    def __init__(self, store: BlockStore, pattern: float = 0.0001, seed: int = 42, validate: bool = False):
+    def __init__(self, store: BlockStore, pattern: float = 0.01, seed: int = 42, validate: bool = False):
         """
         Initialize database with a BlockStore instance.
 
@@ -184,7 +184,12 @@ class DB:
 
             if reconstruct and table:
                 # Reconstruct as dictionary
-                row_dict = dict(zip(table.columns, row_values))
+                # If primary_key is ["rowid"], skip the first element (rowid)
+                if table.primary_key == ["rowid"]:
+                    data_values = row_values[1:]  # Skip rowid
+                else:
+                    data_values = row_values
+                row_dict = dict(zip(table.columns, data_values))
                 yield (key, row_dict)
             else:
                 # Return raw array
