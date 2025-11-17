@@ -228,7 +228,7 @@ def dump_from_repo(ref: Optional[str] = None, prolly_dir: str = '.prolly',
     print(f"\nTotal: {count:,} keys found")
 
 
-def diff_refs(old_ref: str, new_ref: Optional[str] = None,
+def diff_refs(old_ref: Optional[str] = None, new_ref: Optional[str] = None,
               prolly_dir: str = '.prolly',
               limit: Optional[int] = None,
               prefix: Optional[str] = None):
@@ -236,13 +236,19 @@ def diff_refs(old_ref: str, new_ref: Optional[str] = None,
     Diff two refs or commits.
 
     Args:
-        old_ref: First ref/commit
+        old_ref: First ref/commit (default: HEAD~)
         new_ref: Second ref/commit (default: HEAD)
         prolly_dir: Repository directory
         limit: Maximum number of diff events to display
         prefix: Optional key prefix to filter diff results
     """
     repo = _get_repo(prolly_dir)
+
+    # Default to HEAD~ vs HEAD
+    if old_ref is None:
+        old_ref = "HEAD~"
+    if new_ref is None:
+        new_ref = "HEAD"
 
     # Resolve old_ref
     old_commit_hash = repo.resolve_ref(old_ref)
@@ -1020,6 +1026,9 @@ Examples:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
+  # Diff HEAD with HEAD~ (default)
+  python cli.py diff
+
   # Diff a ref with HEAD
   python cli.py diff main
 
@@ -1036,7 +1045,8 @@ Examples:
   python cli.py diff main develop --prefix /d/table_name
         ''')
 
-    diff_parser.add_argument('old_ref', help='Old ref/commit')
+    diff_parser.add_argument('old_ref', nargs='?', default=None,
+                        help='Old ref/commit (default: HEAD~)')
     diff_parser.add_argument('new_ref', nargs='?', default=None,
                         help='New ref/commit (default: HEAD)')
     diff_parser.add_argument('--dir', default='.prolly',
