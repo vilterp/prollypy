@@ -143,23 +143,24 @@ class DB:
                 pk_parts = [str(row[i]) for i in pk_indices]
             pk_value = "/".join(pk_parts)
 
-            # Create key-value pair
-            key = f"/d/{table_name}/{pk_value}".encode('utf-8')
-            value = json.dumps(list(row), separators=(',', ':')).encode('utf-8')
-            batch.append((key, value))
+            # Create one key-value pair per cell: /d/<table>/<pk>/<col> => <value>
+            for col_idx, col_name in enumerate(table.columns):
+                key = f"/d/{table_name}/{pk_value}/{col_name}".encode('utf-8')
+                value = json.dumps(row[col_idx], separators=(',', ':')).encode('utf-8')
+                batch.append((key, value))
 
             # Insert batch when full
             if len(batch) >= batch_size:
                 batch.sort(key=lambda x: x[0])
                 self.tree.insert_batch(batch, verbose=verbose)
-                total_inserted += len(batch)
+                total_inserted += len(batch) // len(table.columns)  # Count rows, not cells
                 batch = []
 
         # Insert remaining rows
         if batch:
             batch.sort(key=lambda x: x[0])
             self.tree.insert_batch(batch, verbose=verbose)
-            total_inserted += len(batch)
+            total_inserted += len(batch) // len(table.columns)  # Count rows, not cells
 
         return total_inserted
 
@@ -176,24 +177,54 @@ class DB:
         Yields:
             Tuples of (key, row_data) where key is bytes and row_data is dict if reconstruct=True, else list
         """
-        table = self.get_table(table_name) if reconstruct else None
+        table = self.get_table(table_name)
+        if not table:
+            return
+
         data_prefix = f"/d/{table_name}/{prefix}".encode('utf-8')
 
-        for key, value in self.tree.items(data_prefix):
-            row_values = json.loads(value.decode('utf-8'))
+        # Group cells by row (primary key)
+        current_pk = None
+        current_row_cells = {}
 
-            if reconstruct and table:
-                # Reconstruct as dictionary
-                # If primary_key is ["rowid"], skip the first element (rowid)
-                if table.primary_key == ["rowid"]:
-                    data_values = row_values[1:]  # Skip rowid
+        for key, value in self.tree.items(data_prefix):
+            # Parse key: /d/<table>/<pk>/<col>
+            key_str = key.decode('utf-8')
+            parts = key_str.split('/')
+            # parts: ['', 'd', table_name, pk_part1, ..., pk_partN, col_name]
+            # Find where pk ends and column starts
+            # The last part is the column name
+            col_name = parts[-1]
+            # Everything between table_name and col_name is the pk
+            pk_parts = parts[3:-1]
+            pk_value = '/'.join(pk_parts)
+
+            # If we're on a new row, yield the previous one
+            if current_pk is not None and pk_value != current_pk:
+                # Yield the completed row
+                row_key = f"/d/{table_name}/{current_pk}".encode('utf-8')
+                if reconstruct:
+                    yield (row_key, current_row_cells)
                 else:
-                    data_values = row_values
-                row_dict = dict(zip(table.columns, data_values))
-                yield (key, row_dict)
+                    # Return as array in column order
+                    row_array = [current_row_cells.get(col) for col in table.columns]
+                    yield (row_key, row_array)
+                current_row_cells = {}
+
+            current_pk = pk_value
+            # Decode the cell value
+            cell_value = json.loads(value.decode('utf-8'))
+            current_row_cells[col_name] = cell_value
+
+        # Yield the last row if any
+        if current_pk is not None:
+            row_key = f"/d/{table_name}/{current_pk}".encode('utf-8')
+            if reconstruct:
+                yield (row_key, current_row_cells)
             else:
-                # Return raw array
-                yield (key, row_values)
+                # Return as array in column order
+                row_array = [current_row_cells.get(col) for col in table.columns]
+                yield (row_key, row_array)
 
     def get_root_hash(self) -> bytes:
         """
