@@ -911,6 +911,93 @@ def gc_repo(prolly_dir: str = '.prolly', cache_size: int = 1000,
             print(f"  {key}: {value}")
 
 
+def list_and_create_branch(name: Optional[str] = None, prolly_dir: str = '.prolly',
+                           from_ref: Optional[str] = None):
+    """
+    List all branches or create a new branch.
+
+    Args:
+        name: Branch name to create (if None, lists all branches)
+        prolly_dir: Repository directory
+        from_ref: Ref/commit to branch from (default: current HEAD)
+    """
+    repo = _get_repo(prolly_dir)
+
+    if name is None:
+        # List branches
+        branches = repo.list_branches()
+        if not branches:
+            print("No branches found")
+            return
+
+        # Get current HEAD
+        _, current_ref = repo.get_head()
+
+        # Print branches with current HEAD marked
+        for branch_name in sorted(branches.keys()):
+            commit_hash = branches[branch_name]
+            prefix = "* " if branch_name == current_ref else "  "
+            print(f"{prefix}{branch_name}")
+    else:
+        # Create branch
+        try:
+            # Resolve from_ref if provided
+            from_commit = None
+            if from_ref is not None:
+                from_commit = repo.resolve_ref(from_ref)
+                if from_commit is None:
+                    print(f"Error: Ref '{from_ref}' not found")
+                    return
+
+            repo.create_branch(name, from_commit=from_commit)
+
+            # Get the commit it points to for display
+            commit_hash = repo.commit_graph_store.get_ref(name)
+            if commit_hash:
+                commit = repo.get_commit(commit_hash)
+                if commit:
+                    print(f"Created branch '{name}' at commit {commit_hash.hex()[:8]}")
+                    print(f"Message: {commit.message}")
+                else:
+                    print(f"Created branch '{name}'")
+            else:
+                print(f"Created branch '{name}'")
+        except ValueError as e:
+            print(f"Error: {e}")
+
+
+def checkout_branch(ref_name: str, prolly_dir: str = '.prolly'):
+    """
+    Switch to a different branch.
+
+    Args:
+        ref_name: Name of the branch to checkout
+        prolly_dir: Repository directory
+    """
+    repo = _get_repo(prolly_dir)
+
+    try:
+        # Get current HEAD before checkout
+        _, old_ref = repo.get_head()
+
+        # Perform checkout
+        repo.checkout(ref_name)
+
+        # Get the commit we checked out
+        commit_hash = repo.commit_graph_store.get_ref(ref_name)
+        if commit_hash:
+            commit = repo.get_commit(commit_hash)
+            if commit:
+                print(f"Switched to branch '{ref_name}'")
+                print(f"HEAD is now at {commit_hash.hex()[:8]} {commit.message}")
+            else:
+                print(f"Switched to branch '{ref_name}'")
+        else:
+            print(f"Switched to branch '{ref_name}'")
+    except ValueError as e:
+        print(f"Error: {e}")
+
+
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -1215,6 +1302,45 @@ to preview what will be removed before actually removing it.
     gc_parser.add_argument('--dry-run', action='store_true',
                         help='Show what would be removed without actually removing (default: actually remove)')
 
+    # Branch subcommand
+    branch_parser = subparsers.add_parser('branch', help='List or create branches',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  # List all branches (current branch marked with *)
+  python cli.py branch
+
+  # Create a new branch from current HEAD
+  python cli.py branch feature-x
+
+  # Create a branch from a specific ref
+  python cli.py branch feature-y --from main
+
+  # Create a branch from a commit hash
+  python cli.py branch hotfix --from abc123
+        ''')
+    branch_parser.add_argument('name', nargs='?', default=None,
+                        help='Branch name to create (omit to list branches)')
+    branch_parser.add_argument('--from', dest='from_ref', default=None,
+                        help='Ref or commit to branch from (default: HEAD)')
+    branch_parser.add_argument('--dir', default='.prolly',
+                        help='Repository directory (default: .prolly)')
+
+    # Checkout subcommand
+    checkout_parser = subparsers.add_parser('checkout', help='Switch branches',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  # Switch to an existing branch
+  python cli.py checkout main
+
+  # Switch to a different branch
+  python cli.py checkout feature-x
+        ''')
+    checkout_parser.add_argument('ref_name', help='Branch name to checkout')
+    checkout_parser.add_argument('--dir', default='.prolly',
+                        help='Repository directory (default: .prolly)')
+
     args = parser.parse_args()
 
     if args.command == 'init':
@@ -1298,6 +1424,17 @@ to preview what will be removed before actually removing it.
             prolly_dir=args.dir,
             cache_size=args.cache_size,
             dry_run=args.dry_run
+        )
+    elif args.command == 'branch':
+        list_and_create_branch(
+            name=args.name,
+            prolly_dir=args.dir,
+            from_ref=args.from_ref
+        )
+    elif args.command == 'checkout':
+        checkout_branch(
+            ref_name=args.ref_name,
+            prolly_dir=args.dir
         )
     else:
         parser.print_help()
