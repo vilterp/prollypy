@@ -984,6 +984,20 @@ def checkout_branch(ref_name: str, prolly_dir: str = '.prolly'):
         # Get current HEAD before checkout
         _, old_ref = repo.get_head()
 
+        # Check if already on this branch
+        if old_ref == ref_name:
+            commit_hash = repo.commit_graph_store.get_ref(ref_name)
+            if commit_hash:
+                commit = repo.get_commit(commit_hash)
+                if commit:
+                    print(f"Already on '{ref_name}'")
+                    print(f"HEAD is at {commit_hash.hex()[:8]} {commit.message}")
+                else:
+                    print(f"Already on '{ref_name}'")
+            else:
+                print(f"Already on '{ref_name}'")
+            return
+
         # Perform checkout
         repo.checkout(ref_name)
 

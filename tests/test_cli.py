@@ -191,10 +191,13 @@ class TestCheckoutCommand:
 
     def test_checkout_existing_branch(self, repo_with_commits):
         """Test checking out an existing branch."""
-        # Create a new branch
+        # Create a new branch (auto-checks it out)
         list_and_create_branch(name="develop", prolly_dir=repo_with_commits)
 
-        # Checkout the new branch
+        # Go back to main
+        checkout_branch(ref_name="main", prolly_dir=repo_with_commits)
+
+        # Now checkout develop branch
         with capture_stdout() as output:
             checkout_branch(ref_name="develop", prolly_dir=repo_with_commits)
             result = output.getvalue()
@@ -247,10 +250,13 @@ class TestCheckoutCommand:
 
     def test_checkout_shows_commit_message(self, repo_with_commits):
         """Test that checkout shows the commit message of the checked out branch."""
-        # Create a branch
+        # Create a branch (auto-checks it out)
         list_and_create_branch(name="test-branch", prolly_dir=repo_with_commits)
 
-        # Checkout the branch
+        # Go back to main
+        checkout_branch(ref_name="main", prolly_dir=repo_with_commits)
+
+        # Now checkout the test branch
         with capture_stdout() as output:
             checkout_branch(ref_name="test-branch", prolly_dir=repo_with_commits)
             result = output.getvalue()
@@ -259,6 +265,20 @@ class TestCheckoutCommand:
         assert "HEAD is now at" in result
         # The commit message should be shown
         assert "Add some data" in result or "Initial commit" in result
+
+    def test_checkout_already_on_branch(self, repo_with_commits):
+        """Test that checking out the current branch shows 'Already on' message."""
+        # Create and checkout a new branch
+        list_and_create_branch(name="feature", prolly_dir=repo_with_commits)
+
+        # Try to checkout the same branch again
+        with capture_stdout() as output:
+            checkout_branch(ref_name="feature", prolly_dir=repo_with_commits)
+            result = output.getvalue()
+
+        assert "Already on 'feature'" in result
+        assert "HEAD is at" in result
+        assert "Switched" not in result
 
 
 class TestBranchAndCheckoutIntegration:
