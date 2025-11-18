@@ -93,16 +93,16 @@ class TestBranchCommand:
             list_and_create_branch(name="feature-x", prolly_dir=repo_dir)
             result = output.getvalue()
 
-        assert "Created branch 'feature-x'" in result
+        assert "Switched to a new branch 'feature-x'" in result
         assert "Initial commit" in result
 
-        # Verify branch exists by listing
+        # Verify branch exists and is checked out
         with capture_stdout() as output:
             list_and_create_branch(prolly_dir=repo_dir)
             list_output = output.getvalue()
 
-        assert "feature-x" in list_output
-        assert "* main" in list_output
+        assert "* feature-x" in list_output
+        assert "  main" in list_output
 
     def test_create_branch_from_specific_ref(self, repo_with_commits):
         """Test creating a branch from a specific ref."""
@@ -115,8 +115,15 @@ class TestBranchCommand:
             )
             result = output.getvalue()
 
-        assert "Created branch 'feature-y'" in result
+        assert "Switched to a new branch 'feature-y'" in result
         assert "Add some data" in result  # Should show the commit message
+
+        # Verify the new branch is checked out
+        with capture_stdout() as output:
+            list_and_create_branch(prolly_dir=repo_with_commits)
+            list_output = output.getvalue()
+
+        assert "* feature-y" in list_output
 
     def test_create_duplicate_branch_error(self, repo_dir):
         """Test that creating a duplicate branch shows an error."""
@@ -143,12 +150,12 @@ class TestBranchCommand:
 
     def test_list_multiple_branches(self, repo_with_commits):
         """Test listing when multiple branches exist."""
-        # Create some branches
+        # Create some branches (each creates and checks out)
         list_and_create_branch(name="develop", prolly_dir=repo_with_commits)
         list_and_create_branch(name="feature-1", prolly_dir=repo_with_commits)
         list_and_create_branch(name="feature-2", prolly_dir=repo_with_commits)
 
-        # List all branches
+        # List all branches (currently on feature-2)
         with capture_stdout() as output:
             list_and_create_branch(prolly_dir=repo_with_commits)
             result = output.getvalue()
@@ -156,8 +163,8 @@ class TestBranchCommand:
         # Verify all branches appear
         assert "develop" in result
         assert "feature-1" in result
-        assert "feature-2" in result
-        assert "* main" in result
+        assert "* feature-2" in result  # Last created branch is checked out
+        assert "  main" in result
 
         # Verify branches are sorted
         lines = [line.strip() for line in result.strip().split('\n')]
@@ -166,9 +173,8 @@ class TestBranchCommand:
 
     def test_list_branches_shows_current_head(self, repo_with_commits):
         """Test that current HEAD is marked with * in branch list."""
-        # Create and checkout a new branch
+        # Create a new branch (automatically checks it out)
         list_and_create_branch(name="feature", prolly_dir=repo_with_commits)
-        checkout_branch("feature", prolly_dir=repo_with_commits)
 
         # List branches
         with capture_stdout() as output:
@@ -266,26 +272,12 @@ class TestBranchAndCheckoutIntegration:
 
         assert "* main" in list_output
 
-        # Create feature branch
+        # Create feature branch (automatically checks it out)
         with capture_stdout() as output:
             list_and_create_branch(name="feature", prolly_dir=repo_with_commits)
             create_output = output.getvalue()
 
-        assert "Created branch 'feature'" in create_output
-
-        # Still on main
-        with capture_stdout() as output:
-            list_and_create_branch(prolly_dir=repo_with_commits)
-            list_output = output.getvalue()
-
-        assert "* main" in list_output
-
-        # Checkout feature
-        with capture_stdout() as output:
-            checkout_branch(ref_name="feature", prolly_dir=repo_with_commits)
-            checkout_output = output.getvalue()
-
-        assert "Switched to branch 'feature'" in checkout_output
+        assert "Switched to a new branch 'feature'" in create_output
 
         # Now on feature
         with capture_stdout() as output:
@@ -294,27 +286,44 @@ class TestBranchAndCheckoutIntegration:
 
         assert "* feature" in list_output
 
+        # Switch back to main
+        with capture_stdout() as output:
+            checkout_branch(ref_name="main", prolly_dir=repo_with_commits)
+            checkout_output = output.getvalue()
+
+        assert "Switched to branch 'main'" in checkout_output
+
+        # Verify we're back on main
+        with capture_stdout() as output:
+            list_and_create_branch(prolly_dir=repo_with_commits)
+            list_output = output.getvalue()
+
+        assert "* main" in list_output
+
     def test_branch_independence(self, repo_with_commits):
         """Test that branches maintain independence after creation."""
-        # Create develop branch from main
-        list_and_create_branch(name="develop", prolly_dir=repo_with_commits)
+        # Create develop branch from main (automatically checks it out)
+        with capture_stdout() as output:
+            list_and_create_branch(name="develop", prolly_dir=repo_with_commits)
+            develop_output = output.getvalue()
 
-        # Create feature branch from main (not from develop)
-        list_and_create_branch(name="feature", from_ref="main", prolly_dir=repo_with_commits)
+        # Create feature branch from main (not from develop, automatically checks it out)
+        with capture_stdout() as output:
+            list_and_create_branch(name="feature", from_ref="main", prolly_dir=repo_with_commits)
+            feature_output = output.getvalue()
 
-        # Both should point to the same commit initially
+        # Both should have been created from the same commit (main)
         # This is verified by them both showing the same commit message
-        with capture_stdout() as output:
-            checkout_branch(ref_name="develop", prolly_dir=repo_with_commits)
-            checkout_output1 = output.getvalue()
+        assert "Add some data" in develop_output or "Initial commit" in develop_output
+        assert "Add some data" in feature_output or "Initial commit" in feature_output
 
+        # Verify both branches exist
         with capture_stdout() as output:
-            checkout_branch(ref_name="feature", prolly_dir=repo_with_commits)
-            checkout_output2 = output.getvalue()
+            list_and_create_branch(prolly_dir=repo_with_commits)
+            list_output = output.getvalue()
 
-        # Both should show the same commit
-        assert "Add some data" in checkout_output1 or "Initial commit" in checkout_output1
-        assert "Add some data" in checkout_output2 or "Initial commit" in checkout_output2
+        assert "develop" in list_output
+        assert "* feature" in list_output  # Currently on feature
 
     def test_multiple_branch_switches(self, repo_with_commits):
         """Test switching between multiple branches."""

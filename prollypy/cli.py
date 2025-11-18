@@ -915,7 +915,7 @@ def gc_repo(prolly_dir: str = '.prolly', cache_size: int = 1000,
 def list_and_create_branch(name: Optional[str] = None, prolly_dir: str = '.prolly',
                            from_ref: Optional[str] = None):
     """
-    List all branches or create a new branch.
+    List all branches or create a new branch and check it out.
 
     Args:
         name: Branch name to create (if None, lists all branches)
@@ -940,7 +940,7 @@ def list_and_create_branch(name: Optional[str] = None, prolly_dir: str = '.proll
             prefix = "* " if branch_name == current_ref else "  "
             print(f"{prefix}{branch_name}")
     else:
-        # Create branch
+        # Create branch and check it out
         try:
             # Resolve from_ref if provided
             from_commit = None
@@ -952,17 +952,20 @@ def list_and_create_branch(name: Optional[str] = None, prolly_dir: str = '.proll
 
             repo.create_branch(name, from_commit=from_commit)
 
+            # Checkout the newly created branch
+            repo.checkout(name)
+
             # Get the commit it points to for display
             commit_hash = repo.commit_graph_store.get_ref(name)
             if commit_hash:
                 commit = repo.get_commit(commit_hash)
                 if commit:
-                    print(f"Created branch '{name}' at commit {commit_hash.hex()[:8]}")
-                    print(f"Message: {commit.message}")
+                    print(f"Switched to a new branch '{name}'")
+                    print(f"HEAD is now at {commit_hash.hex()[:8]} {commit.message}")
                 else:
-                    print(f"Created branch '{name}'")
+                    print(f"Switched to a new branch '{name}'")
             else:
-                print(f"Created branch '{name}'")
+                print(f"Switched to a new branch '{name}'")
         except ValueError as e:
             print(f"Error: {e}")
 
