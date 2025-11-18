@@ -16,12 +16,12 @@ from .store import (
 from .cursor import TreeCursor
 from .diff import Differ, diff, Added, Deleted, Modified
 from .db import DB, Table
-from .repo import (
+from .repo import Repo
+from .commit_graph_store import (
     Commit,
     CommitGraphStore,
     MemoryCommitGraphStore,
     SqliteCommitGraphStore,
-    Repo
 )
 
 __all__ = [

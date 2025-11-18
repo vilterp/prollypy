@@ -20,7 +20,8 @@ from .sqlite_import import import_sqlite_database, import_sqlite_table, validate
 from .commonality import compute_commonality, print_commonality_report
 from .store_gc import garbage_collect, find_garbage_nodes, GCStats
 from .tree import ProllyTree
-from .repo import Repo, SqliteCommitGraphStore
+from .repo import Repo
+from .commit_graph_store import SqliteCommitGraphStore
 
 
 def _get_author() -> str:
