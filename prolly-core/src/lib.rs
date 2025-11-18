@@ -12,7 +12,7 @@ pub mod cursor;
 pub mod tree;
 pub mod commit_graph_store;
 pub mod db;
-// pub mod diff;
+pub mod diff;
 // pub mod commonality;
 // pub mod store_gc;
 // pub mod repo;
@@ -26,6 +26,7 @@ pub use tree::ProllyTree;
 pub use cursor::TreeCursor;
 pub use commit_graph_store::{Commit, CommitGraphStore, MemoryCommitGraphStore};
 pub use db::{DB, Table};
+pub use diff::{Added, Deleted, Differ, DiffEvent, DiffStats, Modified};
 
 /// Hash type used throughout the codebase for content addressing
 pub type Hash = Vec<u8>;
