@@ -12,7 +12,8 @@ import sys
 from contextlib import contextmanager
 
 from prollypy.cli import list_and_create_branch, checkout_branch, init_repo
-from prollypy.repo import Repo, SqliteCommitGraphStore
+from prollypy.repo import Repo
+from prollypy.commit_graph_store import SqliteCommitGraphStore
 from prollypy.store import CachedFSBlockStore
 from prollypy.tree import ProllyTree
 
