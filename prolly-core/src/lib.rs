@@ -10,12 +10,12 @@ pub mod stats;
 pub mod store;
 pub mod cursor;
 pub mod tree;
+pub mod commit_graph_store;
+pub mod db;
 // pub mod diff;
 // pub mod commonality;
 // pub mod store_gc;
-// pub mod commit_graph_store;
 // pub mod repo;
-// pub mod db;
 // pub mod db_diff;
 
 // Re-export commonly used types
@@ -24,6 +24,8 @@ pub use stats::Stats;
 pub use store::{BlockStore, MemoryBlockStore, FileSystemBlockStore, CachedFSBlockStore};
 pub use tree::ProllyTree;
 pub use cursor::TreeCursor;
+pub use commit_graph_store::{Commit, CommitGraphStore, MemoryCommitGraphStore};
+pub use db::{DB, Table};
 
 /// Hash type used throughout the codebase for content addressing
 pub type Hash = Vec<u8>;
