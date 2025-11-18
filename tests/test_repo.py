@@ -7,12 +7,12 @@ import tempfile
 import os
 from pathlib import Path
 
-from prollypy.repo import (
+from prollypy.repo import Repo
+from prollypy.commit_graph_store import (
     Commit,
     CommitGraphStore,
     MemoryCommitGraphStore,
     SqliteCommitGraphStore,
-    Repo
 )
 from prollypy.store import MemoryBlockStore
 from prollypy.tree import ProllyTree
