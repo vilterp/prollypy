@@ -254,8 +254,8 @@ mod tests {
     #[test]
     fn test_diff_empty_trees() {
         let store = Arc::new(MemoryBlockStore::new());
-        let tree1 = ProllyTree::new(0.01, 42, Some(store.clone()), false);
-        let tree2 = ProllyTree::new(0.01, 42, Some(store.clone()), false);
+        let tree1 = ProllyTree::new(0.01, 42, Some(store.clone()));
+        let tree2 = ProllyTree::new(0.01, 42, Some(store.clone()));
 
         let hash1 = tree1.get_root_hash();
         let hash2 = tree2.get_root_hash();
@@ -270,10 +270,10 @@ mod tests {
     fn test_diff_additions() {
         let store = Arc::new(MemoryBlockStore::new());
 
-        let tree1 = ProllyTree::new(0.01, 42, Some(store.clone()), false);
+        let tree1 = ProllyTree::new(0.01, 42, Some(store.clone()));
         let hash1 = tree1.get_root_hash();
 
-        let mut tree2 = ProllyTree::new(0.01, 42, Some(store.clone()), false);
+        let mut tree2 = ProllyTree::new(0.01, 42, Some(store.clone()));
         tree2.insert_batch(
             vec![
                 (b"a".to_vec(), b"val_a".to_vec()),
@@ -300,7 +300,7 @@ mod tests {
     fn test_diff_deletions() {
         let store = Arc::new(MemoryBlockStore::new());
 
-        let mut tree1 = ProllyTree::new(0.01, 42, Some(store.clone()), false);
+        let mut tree1 = ProllyTree::new(0.01, 42, Some(store.clone()));
         tree1.insert_batch(
             vec![
                 (b"a".to_vec(), b"val_a".to_vec()),
@@ -310,7 +310,7 @@ mod tests {
         );
         let hash1 = tree1.get_root_hash();
 
-        let tree2 = ProllyTree::new(0.01, 42, Some(store.clone()), false);
+        let tree2 = ProllyTree::new(0.01, 42, Some(store.clone()));
         let hash2 = tree2.get_root_hash();
 
         let mut differ = Differ::new(store.as_ref());
@@ -330,11 +330,11 @@ mod tests {
     fn test_diff_modifications() {
         let store = Arc::new(MemoryBlockStore::new());
 
-        let mut tree1 = ProllyTree::new(0.01, 42, Some(store.clone()), false);
+        let mut tree1 = ProllyTree::new(0.01, 42, Some(store.clone()));
         tree1.insert_batch(vec![(b"a".to_vec(), b"val_old".to_vec())], false);
         let hash1 = tree1.get_root_hash();
 
-        let mut tree2 = ProllyTree::new(0.01, 42, Some(store.clone()), false);
+        let mut tree2 = ProllyTree::new(0.01, 42, Some(store.clone()));
         tree2.insert_batch(vec![(b"a".to_vec(), b"val_new".to_vec())], false);
         let hash2 = tree2.get_root_hash();
 
@@ -356,7 +356,7 @@ mod tests {
     fn test_diff_with_prefix() {
         let store = Arc::new(MemoryBlockStore::new());
 
-        let mut tree1 = ProllyTree::new(0.01, 42, Some(store.clone()), false);
+        let mut tree1 = ProllyTree::new(0.01, 42, Some(store.clone()));
         tree1.insert_batch(
             vec![
                 (b"a/1".to_vec(), b"v1".to_vec()),
@@ -366,7 +366,7 @@ mod tests {
         );
         let hash1 = tree1.get_root_hash();
 
-        let mut tree2 = ProllyTree::new(0.01, 42, Some(store.clone()), false);
+        let mut tree2 = ProllyTree::new(0.01, 42, Some(store.clone()));
         tree2.insert_batch(
             vec![
                 (b"a/1".to_vec(), b"v1_new".to_vec()),
@@ -393,7 +393,7 @@ mod tests {
     fn test_diff_identical_trees() {
         let store = Arc::new(MemoryBlockStore::new());
 
-        let mut tree1 = ProllyTree::new(0.01, 42, Some(store.clone()), false);
+        let mut tree1 = ProllyTree::new(0.01, 42, Some(store.clone()));
         tree1.insert_batch(vec![(b"a".to_vec(), b"val".to_vec())], false);
         let hash = tree1.get_root_hash();
 

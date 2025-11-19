@@ -51,9 +51,8 @@ impl DB {
     /// * `store` - Storage backend instance
     /// * `pattern` - ProllyTree split pattern
     /// * `seed` - Random seed for rolling hash
-    /// * `validate` - If true, validate tree structure during operations (slower)
-    pub fn new(store: Arc<dyn BlockStore>, pattern: f64, seed: u32, validate: bool) -> Self {
-        let tree = ProllyTree::new(pattern, seed, Some(store), validate);
+    pub fn new(store: Arc<dyn BlockStore>, pattern: f64, seed: u32) -> Self {
+        let tree = ProllyTree::new(pattern, seed, Some(store));
         DB { tree }
     }
 
@@ -212,7 +211,7 @@ mod tests {
     #[test]
     fn test_create_table() {
         let store = Arc::new(MemoryBlockStore::new());
-        let mut db = DB::new(store, 0.01, 42, false);
+        let mut db = DB::new(store, 0.01, 42);
 
         let table = db.create_table(
             "users".to_string(),
@@ -228,7 +227,7 @@ mod tests {
     #[test]
     fn test_get_table() {
         let store = Arc::new(MemoryBlockStore::new());
-        let mut db = DB::new(store, 0.01, 42, false);
+        let mut db = DB::new(store, 0.01, 42);
 
         db.create_table(
             "users".to_string(),
@@ -245,7 +244,7 @@ mod tests {
     #[test]
     fn test_list_tables() {
         let store = Arc::new(MemoryBlockStore::new());
-        let mut db = DB::new(store, 0.01, 42, false);
+        let mut db = DB::new(store, 0.01, 42);
 
         db.create_table(
             "users".to_string(),
@@ -270,7 +269,7 @@ mod tests {
     #[test]
     fn test_insert_rows() {
         let store = Arc::new(MemoryBlockStore::new());
-        let mut db = DB::new(store, 0.01, 42, false);
+        let mut db = DB::new(store, 0.01, 42);
 
         db.create_table(
             "users".to_string(),

@@ -48,9 +48,6 @@ pub struct ProllyTree {
     seed: u32,
     /// Storage backend
     store: Arc<dyn BlockStore>,
-    /// Enable validation during tree building
-    #[allow(dead_code)]
-    validate: bool,
     /// Root node
     root: Node,
     /// Operation statistics
@@ -66,12 +63,10 @@ impl ProllyTree {
     ///              Default 0.01 means ~100 entries per node on average.
     /// * `seed` - Seed for rolling hash function for reproducibility
     /// * `store` - Storage backend (defaults to MemoryBlockStore if None)
-    /// * `validate` - If true, validate node structure during tree building (slower)
     pub fn new(
         pattern: f64,
         seed: u32,
         store: Option<Arc<dyn BlockStore>>,
-        validate: bool,
     ) -> Self {
         let pattern_u32 = (pattern * (u32::MAX as f64)) as u32;
         let store = store.unwrap_or_else(|| Arc::new(MemoryBlockStore::new()));
@@ -80,7 +75,6 @@ impl ProllyTree {
             pattern: pattern_u32,
             seed,
             store,
-            validate,
             root: Node::new_leaf(),
             stats: BatchStats::new(),
         }
@@ -88,7 +82,7 @@ impl ProllyTree {
 
     /// Create a new ProllyTree with default settings
     pub fn default() -> Self {
-        Self::new(0.01, 42, None, false)
+        Self::new(0.01, 42, None)
     }
 
     /// Reset operation statistics for a new batch

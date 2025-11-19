@@ -56,7 +56,7 @@ impl Repo {
         let repo = Self::new(block_store.clone(), commit_graph_store.clone(), default_author.clone());
 
         // Create empty tree
-        let empty_tree = ProllyTree::new(0.01, 42, Some(block_store.clone()), false);
+        let empty_tree = ProllyTree::new(0.01, 42, Some(block_store.clone()));
         let tree_root = empty_tree.get_root_hash();
 
         // Create initial commit
@@ -526,7 +526,7 @@ mod tests {
         let repo = Repo::init_empty(block_store.clone(), commit_store, "test@example.com".to_string());
 
         // Create a new tree
-        let mut tree = ProllyTree::new(0.01, 42, Some(block_store.clone()), false);
+        let mut tree = ProllyTree::new(0.01, 42, Some(block_store.clone()));
         tree.insert_batch(vec![(b"key".to_vec(), b"value".to_vec())], false);
         let new_root = tree.get_root_hash();
 
@@ -555,7 +555,7 @@ mod tests {
         assert_eq!(head_hash, main_hash);
 
         // Create a second commit
-        let mut tree = ProllyTree::new(0.01, 42, Some(block_store.clone()), false);
+        let mut tree = ProllyTree::new(0.01, 42, Some(block_store.clone()));
         tree.insert_batch(vec![(b"key".to_vec(), b"value".to_vec())], false);
         let new_root = tree.get_root_hash();
         repo.commit(&new_root, "Second commit", None, None, None);
@@ -577,7 +577,7 @@ mod tests {
 
         // Create a few commits
         for i in 0..3 {
-            let mut tree = ProllyTree::new(0.01, 42, Some(block_store.clone()), false);
+            let mut tree = ProllyTree::new(0.01, 42, Some(block_store.clone()));
             tree.insert_batch(vec![(format!("key{}", i).into_bytes(), b"value".to_vec())], false);
             let new_root = tree.get_root_hash();
             repo.commit(&new_root, &format!("Commit {}", i), None, None, None);
@@ -609,7 +609,7 @@ mod tests {
         // Create a few commits on main
         let mut tree_roots = vec![];
         for i in 0..3 {
-            let mut tree = ProllyTree::new(0.01, 42, Some(block_store.clone()), false);
+            let mut tree = ProllyTree::new(0.01, 42, Some(block_store.clone()));
             tree.insert_batch(vec![(format!("key{}", i).into_bytes(), b"value".to_vec())], false);
             let new_root = tree.get_root_hash();
             tree_roots.push(new_root.clone());
@@ -619,7 +619,7 @@ mod tests {
         // Create a branch and add another commit
         repo.create_branch("develop", Some(&repo.resolve_ref("HEAD~1").unwrap())).unwrap();
         repo.checkout("develop").unwrap();
-        let mut tree = ProllyTree::new(0.01, 42, Some(block_store.clone()), false);
+        let mut tree = ProllyTree::new(0.01, 42, Some(block_store.clone()));
         tree.insert_batch(vec![(b"branch_key".to_vec(), b"value".to_vec())], false);
         let branch_root = tree.get_root_hash();
         repo.commit(&branch_root, "Branch commit", None, None, None);

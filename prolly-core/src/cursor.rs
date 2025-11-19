@@ -14,8 +14,6 @@ use crate::Hash;
 /// It also supports peeking at the next hash to enable efficient subtree skipping.
 pub struct TreeCursor<'a> {
     store: &'a dyn BlockStore,
-    #[allow(dead_code)]
-    root_hash: Hash,
     /// Stack of (node, index) tuples representing current position
     /// index points to next unvisited child/entry
     stack: Vec<(Node, usize)>,
@@ -38,7 +36,6 @@ impl<'a> TreeCursor<'a> {
     ) -> Self {
         let mut cursor = TreeCursor {
             store,
-            root_hash: root_hash.clone(),
             stack: Vec::new(),
             current: None,
         };

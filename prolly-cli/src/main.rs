@@ -142,7 +142,7 @@ fn import_sqlite(
     let store = Arc::new(CachedFSBlockStore::new(&store_path, cache_size)?);
 
     // Create database
-    let mut db = DB::new(store.clone(), 0.01, 42, false);
+    let mut db = DB::new(store.clone(), 0.01, 42);
 
     let total_start = Instant::now();
     let mut total_rows = 0;

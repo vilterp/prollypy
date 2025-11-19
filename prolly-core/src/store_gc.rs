@@ -204,7 +204,7 @@ mod tests {
     #[test]
     fn test_gc_no_garbage() {
         let store = Arc::new(MemoryBlockStore::new());
-        let mut tree = ProllyTree::new(0.01, 42, Some(store.clone()), false);
+        let mut tree = ProllyTree::new(0.01, 42, Some(store.clone()));
 
         tree.insert_batch(
             vec![
@@ -230,12 +230,12 @@ mod tests {
         let store = Arc::new(MemoryBlockStore::new());
 
         // Create first tree
-        let mut tree1 = ProllyTree::new(0.01, 42, Some(store.clone()), false);
+        let mut tree1 = ProllyTree::new(0.01, 42, Some(store.clone()));
         tree1.insert_batch(vec![(b"a".to_vec(), b"val_a".to_vec())], false);
         let _old_root = tree1.get_root_hash();
 
         // Create second tree (with different data)
-        let mut tree2 = ProllyTree::new(0.01, 42, Some(store.clone()), false);
+        let mut tree2 = ProllyTree::new(0.01, 42, Some(store.clone()));
         tree2.insert_batch(
             vec![
                 (b"x".to_vec(), b"val_x".to_vec()),
@@ -264,11 +264,11 @@ mod tests {
         let store = Arc::new(MemoryBlockStore::new());
 
         // Create first tree
-        let mut tree1 = ProllyTree::new(0.01, 42, Some(store.clone()), false);
+        let mut tree1 = ProllyTree::new(0.01, 42, Some(store.clone()));
         tree1.insert_batch(vec![(b"a".to_vec(), b"val_a".to_vec())], false);
 
         // Create second tree
-        let mut tree2 = ProllyTree::new(0.01, 42, Some(store.clone()), false);
+        let mut tree2 = ProllyTree::new(0.01, 42, Some(store.clone()));
         tree2.insert_batch(vec![(b"x".to_vec(), b"val_x".to_vec())], false);
         let new_root = tree2.get_root_hash();
 
@@ -291,10 +291,10 @@ mod tests {
         let store = Arc::new(MemoryBlockStore::new());
 
         // Create two trees
-        let mut tree1 = ProllyTree::new(0.01, 42, Some(store.clone()), false);
+        let mut tree1 = ProllyTree::new(0.01, 42, Some(store.clone()));
         tree1.insert_batch(vec![(b"a".to_vec(), b"val_a".to_vec())], false);
 
-        let mut tree2 = ProllyTree::new(0.01, 42, Some(store.clone()), false);
+        let mut tree2 = ProllyTree::new(0.01, 42, Some(store.clone()));
         tree2.insert_batch(vec![(b"x".to_vec(), b"val_x".to_vec())], false);
         let new_root = tree2.get_root_hash();
 
@@ -327,7 +327,7 @@ mod tests {
 
         // Create several commits on main
         for i in 0..3 {
-            let mut tree = ProllyTree::new(0.01, 42, Some(block_store.clone()), false);
+            let mut tree = ProllyTree::new(0.01, 42, Some(block_store.clone()));
             tree.insert_batch(
                 vec![(format!("key{}", i).into_bytes(), b"value".to_vec())],
                 false,
@@ -348,7 +348,7 @@ mod tests {
         assert_eq!(stats.garbage_nodes, 0);
 
         // Now create an orphaned tree that's not part of any commit
-        let mut orphan_tree = ProllyTree::new(0.01, 42, Some(block_store.clone()), false);
+        let mut orphan_tree = ProllyTree::new(0.01, 42, Some(block_store.clone()));
         orphan_tree.insert_batch(vec![(b"orphan".to_vec(), b"data".to_vec())], false);
         let _orphan_root = orphan_tree.get_root_hash();
 
