@@ -1,5 +1,8 @@
 use clap::{Parser, Subcommand};
-use prolly_core::{CachedFSBlockStore, Commit, CommitGraphStore, DB, MemoryCommitGraphStore};
+use prolly_core::{
+    garbage_collect, CachedFSBlockStore, Commit, CommitGraphStore, DB, MemoryCommitGraphStore,
+    Repo,
+};
 use rusqlite::Connection;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -35,6 +38,21 @@ enum Commands {
         /// Verbose output
         #[arg(short, long)]
         verbose: bool,
+    },
+
+    /// Garbage collect unreachable nodes
+    Gc {
+        /// Path to prolly repository
+        #[arg(short, long)]
+        repo: PathBuf,
+
+        /// Dry run - don't actually remove nodes, just report statistics
+        #[arg(short, long)]
+        dry_run: bool,
+
+        /// Cache size for block store
+        #[arg(short, long, default_value = "10000")]
+        cache_size: usize,
     },
 }
 
@@ -259,6 +277,57 @@ fn import_sqlite(
     Ok(())
 }
 
+fn gc_repo(repo_path: PathBuf, dry_run: bool, cache_size: usize) -> anyhow::Result<()> {
+    println!("Garbage collecting repository: {}", repo_path.display());
+    println!("Mode: {}", if dry_run { "dry-run" } else { "live" });
+
+    // Open the repository
+    let store_path = repo_path.join("blocks");
+    let store = Arc::new(CachedFSBlockStore::new(&store_path, cache_size)?);
+    let commit_store = Arc::new(MemoryCommitGraphStore::new());
+
+    // TODO: Load commit graph from filesystem instead of using empty memory store
+    // For now, we'll demonstrate with an empty repo
+    let repo = Repo::new(store.clone(), commit_store, "prolly-cli".to_string());
+
+    println!();
+    println!("Finding reachable tree roots...");
+    let tree_roots = repo.get_reachable_tree_roots();
+    println!("Found {} reachable tree roots", tree_roots.len());
+
+    println!();
+    println!("Running garbage collection...");
+    let start = Instant::now();
+    let stats = garbage_collect(store.as_ref(), &tree_roots, dry_run);
+    let elapsed = start.elapsed();
+
+    println!();
+    println!("=== Garbage Collection Results ===");
+    println!("Total nodes: {}", stats.total_nodes);
+    println!("Reachable nodes: {}", stats.reachable_nodes);
+    println!("Garbage nodes: {}", stats.garbage_nodes);
+    println!(
+        "Reachable: {:.1}%",
+        stats.reachable_percent()
+    );
+    println!(
+        "Garbage: {:.1}%",
+        stats.garbage_percent()
+    );
+    println!("Time: {:.2}s", elapsed.as_secs_f64());
+
+    if dry_run {
+        println!();
+        println!("Dry run complete - no nodes were removed");
+        println!("Run without --dry-run to actually remove garbage nodes");
+    } else {
+        println!();
+        println!("Removed {} garbage nodes", stats.garbage_nodes);
+    }
+
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
@@ -270,6 +339,11 @@ fn main() -> anyhow::Result<()> {
             cache_size,
             verbose,
         } => import_sqlite(sqlite_path, repo, batch_size, cache_size, verbose)?,
+        Commands::Gc {
+            repo,
+            dry_run,
+            cache_size,
+        } => gc_repo(repo, dry_run, cache_size)?,
     }
 
     Ok(())

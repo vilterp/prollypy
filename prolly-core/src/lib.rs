@@ -13,9 +13,9 @@ pub mod tree;
 pub mod commit_graph_store;
 pub mod db;
 pub mod diff;
+pub mod store_gc;
+pub mod repo;
 // pub mod commonality;
-// pub mod store_gc;
-// pub mod repo;
 // pub mod db_diff;
 
 // Re-export commonly used types
@@ -27,6 +27,8 @@ pub use cursor::TreeCursor;
 pub use commit_graph_store::{Commit, CommitGraphStore, MemoryCommitGraphStore};
 pub use db::{DB, Table};
 pub use diff::{Added, Deleted, Differ, DiffEvent, DiffStats, Modified};
+pub use store_gc::{GCStats, garbage_collect, find_reachable_nodes, find_garbage_nodes};
+pub use repo::Repo;
 
 /// Hash type used throughout the codebase for content addressing
 pub type Hash = Vec<u8>;
