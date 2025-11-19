@@ -49,6 +49,7 @@ pub struct ProllyTree {
     /// Storage backend
     store: Arc<dyn BlockStore>,
     /// Enable validation during tree building
+    #[allow(dead_code)]
     validate: bool,
     /// Root node
     root: Node,
