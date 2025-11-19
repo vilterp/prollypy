@@ -18,6 +18,17 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Initialize a new prolly repository
+    Init {
+        /// Path to prolly repository (will be created)
+        #[arg(short, long, default_value = ".prolly")]
+        repo: PathBuf,
+
+        /// Default author for commits
+        #[arg(short, long, default_value = "prolly-cli")]
+        author: String,
+    },
+
     /// Import a SQLite database
     Import {
         /// Path to SQLite database file
@@ -146,6 +157,62 @@ enum Commands {
     },
 }
 
+fn init_repo(repo_path: PathBuf, author: String) -> anyhow::Result<()> {
+    // Check if repository already exists
+    if repo_path.exists() {
+        return Err(anyhow::anyhow!(
+            "Repository already exists at {}",
+            repo_path.display()
+        ));
+    }
+
+    println!("Initializing prolly repository at {}", repo_path.display());
+
+    // Create directory structure
+    std::fs::create_dir_all(&repo_path)?;
+    let store_path = repo_path.join("blocks");
+    let commit_store_path = repo_path.join("commits.db");
+
+    // Create stores
+    let store = Arc::new(CachedFSBlockStore::new(&store_path, 1000)?);
+    let commit_store = Arc::new(SqliteCommitGraphStore::new(&commit_store_path)?);
+
+    // Initialize empty repo with initial commit
+    let repo = Repo::init_empty(store, commit_store, author.clone());
+
+    // Get the initial commit info
+    let (head_commit, ref_name) = repo.get_head();
+
+    println!("Initialized empty prolly repository in {}", repo_path.display());
+    if let Some(commit) = head_commit {
+        let commit_hash = commit.compute_hash();
+        println!("Initial commit: {}", hex::encode(&commit_hash[..8]));
+    }
+    println!("Branch: {}", ref_name);
+    println!("Author: {}", author);
+
+    Ok(())
+}
+
+fn check_repo_exists(repo_path: &PathBuf) -> anyhow::Result<()> {
+    if !repo_path.exists() {
+        return Err(anyhow::anyhow!(
+            "Repository not found at {}. Run 'prolly init' first.",
+            repo_path.display()
+        ));
+    }
+
+    let commit_db = repo_path.join("commits.db");
+    if !commit_db.exists() {
+        return Err(anyhow::anyhow!(
+            "Repository at {} is not initialized. Run 'prolly init' first.",
+            repo_path.display()
+        ));
+    }
+
+    Ok(())
+}
+
 fn import_sqlite(
     sqlite_path: PathBuf,
     repo_path: PathBuf,
@@ -153,14 +220,13 @@ fn import_sqlite(
     cache_size: usize,
     verbose: bool,
 ) -> anyhow::Result<()> {
+    check_repo_exists(&repo_path)?;
+
     println!("Importing SQLite database: {}", sqlite_path.display());
     println!("Target repository: {}", repo_path.display());
     println!("Batch size: {}", batch_size);
     println!("Cache size: {}", cache_size);
     println!();
-
-    // Create repository directory
-    std::fs::create_dir_all(&repo_path)?;
 
     // Open SQLite database
     let sqlite_conn = Connection::open(&sqlite_path)?;
@@ -313,6 +379,8 @@ fn import_sqlite(
 }
 
 fn gc_repo(repo_path: PathBuf, dry_run: bool, cache_size: usize) -> anyhow::Result<()> {
+    check_repo_exists(&repo_path)?;
+
     println!("Garbage collecting repository: {}", repo_path.display());
     println!("Mode: {}", if dry_run { "dry-run" } else { "live" });
 
@@ -367,6 +435,8 @@ fn branch_cmd(
     from: Option<String>,
     cache_size: usize,
 ) -> anyhow::Result<()> {
+    check_repo_exists(&repo_path)?;
+
     let store_path = repo_path.join("blocks");
     let store = Arc::new(CachedFSBlockStore::new(&store_path, cache_size)?);
     let commit_store_path = repo_path.join("commits.db");
@@ -411,6 +481,8 @@ fn branch_cmd(
 }
 
 fn checkout_cmd(repo_path: PathBuf, branch: String, cache_size: usize) -> anyhow::Result<()> {
+    check_repo_exists(&repo_path)?;
+
     let store_path = repo_path.join("blocks");
     let store = Arc::new(CachedFSBlockStore::new(&store_path, cache_size)?);
     let commit_store_path = repo_path.join("commits.db");
@@ -437,6 +509,8 @@ fn log_cmd(
     max_count: Option<usize>,
     cache_size: usize,
 ) -> anyhow::Result<()> {
+    check_repo_exists(&repo_path)?;
+
     let store_path = repo_path.join("blocks");
     let store = Arc::new(CachedFSBlockStore::new(&store_path, cache_size)?);
     let commit_store_path = repo_path.join("commits.db");
@@ -473,6 +547,8 @@ fn get_key(
     from: Option<String>,
     cache_size: usize,
 ) -> anyhow::Result<()> {
+    check_repo_exists(&repo_path)?;
+
     let store_path = repo_path.join("blocks");
     let store = Arc::new(CachedFSBlockStore::new(&store_path, cache_size)?);
     let commit_store_path = repo_path.join("commits.db");
@@ -532,6 +608,8 @@ fn set_key(
     message: Option<String>,
     cache_size: usize,
 ) -> anyhow::Result<()> {
+    check_repo_exists(&repo_path)?;
+
     let store_path = repo_path.join("blocks");
     let store = Arc::new(CachedFSBlockStore::new(&store_path, cache_size)?);
     let commit_store_path = repo_path.join("commits.db");
@@ -589,6 +667,7 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Init { repo, author } => init_repo(repo, author)?,
         Commands::Import {
             sqlite_path,
             repo,
@@ -680,6 +759,9 @@ mod tests {
         )
         .unwrap();
         conn.close().unwrap();
+
+        // Initialize the repo first
+        init_repo(repo_path.clone(), "test@example.com".to_string()).unwrap();
 
         // Call the import function
         let result = import_sqlite(sqlite_path, repo_path.clone(), 0, 100, false);
@@ -1001,6 +1083,51 @@ mod tests {
         // Verify dry run didn't remove nodes
         let nodes_after = repo.block_store.count_nodes();
         assert_eq!(nodes_before, nodes_after);
+    }
+
+    #[test]
+    fn test_init_creates_repo() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path().join("test_repo");
+
+        // Init should succeed
+        let result = init_repo(repo_path.clone(), "test@example.com".to_string());
+        assert!(result.is_ok());
+
+        // Repo directory should exist
+        assert!(repo_path.exists());
+        assert!(repo_path.join("blocks").exists());
+        assert!(repo_path.join("commits.db").exists());
+
+        // Should fail if run again
+        let result = init_repo(repo_path.clone(), "test@example.com".to_string());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("already exists"));
+    }
+
+    #[test]
+    fn test_check_repo_exists() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path().join("nonexistent");
+
+        // Should fail for nonexistent repo
+        let result = check_repo_exists(&repo_path);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Run 'prolly init'"));
+    }
+
+    #[test]
+    fn test_commands_require_init() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path().join("uninit_repo");
+
+        // All commands should fail without init
+        assert!(gc_repo(repo_path.clone(), true, 100).is_err());
+        assert!(branch_cmd(repo_path.clone(), None, None, 100).is_err());
+        assert!(checkout_cmd(repo_path.clone(), "main".to_string(), 100).is_err());
+        assert!(log_cmd(repo_path.clone(), None, None, 100).is_err());
+        assert!(get_key(repo_path.clone(), "key".to_string(), None, 100).is_err());
+        assert!(set_key(repo_path.clone(), "key".to_string(), "value".to_string(), None, 100).is_err());
     }
 
     #[test]
