@@ -1,7 +1,7 @@
 mod sqlite_commit_store;
 
 use clap::{Parser, Subcommand};
-use prolly_core::{garbage_collect, CachedFSBlockStore, DB, Repo};
+use prolly_core::{garbage_collect, BlockStore, CachedFSBlockStore, DB, Repo};
 use rusqlite::Connection;
 use sqlite_commit_store::SqliteCommitGraphStore;
 use std::path::PathBuf;
@@ -98,7 +98,7 @@ enum Commands {
         start: Option<String>,
 
         /// Maximum number of commits to show
-        #[arg(short = 'n', long)]
+        #[arg(short, long)]
         max_count: Option<usize>,
 
         /// Cache size for block store
@@ -161,37 +161,31 @@ fn import_sqlite(
                     row.get::<_, i32>(5)?,    // pk
                 ))
             })?
-            .collect::<Result<_, _>>()?;
+            .collect::<Result<_, rusqlite::Error>>()?;
 
         let columns: Vec<String> = table_info.iter().map(|(name, _, _)| name.clone()).collect();
-        let types: Vec<String> = table_info.iter().map(|(_, typ, _)| typ.clone()).collect();
-
-        // Get primary key
-        let mut pk_columns: Vec<_> = table_info
+        let types: Vec<String> = table_info
             .iter()
-            .enumerate()
-            .filter(|(_, (_, _, pk))| *pk > 0)
-            .map(|(idx, (name, _, pk))| (*pk, name.clone(), idx))
+            .map(|(_, col_type, _)| col_type.clone())
+            .collect();
+        let primary_key: Vec<String> = table_info
+            .iter()
+            .filter(|(_, _, pk)| *pk > 0)
+            .map(|(name, _, _)| name.clone())
             .collect();
 
-        pk_columns.sort_by_key(|(pk, _, _)| *pk);
+        println!("Columns: {:?}", columns);
+        println!("Primary key: {:?}", primary_key);
 
-        let primary_key: Vec<String> = if pk_columns.is_empty() {
-            vec!["rowid".to_string()]
-        } else {
-            pk_columns.iter().map(|(_, name, _)| name.clone()).collect()
-        };
+        // Create table in DB
+        db.create_table(table_name.clone(), columns.clone(), types, primary_key);
 
-        println!("Columns: {}", columns.join(", "));
-        println!("Primary key: {}", primary_key.join(", "));
-
-        // Get row count
-        let row_count: i64 = sqlite_conn.query_row(
-            &format!("SELECT COUNT(*) FROM {}", table_name),
-            [],
-            |row| row.get(0),
-        )?;
-        println!("Total rows: {}", row_count);
+        // Count rows
+        let row_count: i64 = sqlite_conn
+            .query_row(&format!("SELECT COUNT(*) FROM {}", table_name), [], |row| {
+                row.get(0)
+            })?;
+        println!("Row count: {}", row_count);
 
         if row_count == 0 {
             println!("Skipping empty table");
@@ -199,91 +193,69 @@ fn import_sqlite(
             continue;
         }
 
-        // Create table in DB
-        db.create_table(
-            table_name.clone(),
-            columns.clone(),
-            types.clone(),
-            primary_key.clone(),
-        );
-
-        // Import rows
-        let query = if primary_key == vec!["rowid"] {
-            format!("SELECT rowid, * FROM {}", table_name)
-        } else {
-            format!("SELECT * FROM {}", table_name)
-        };
+        // Import data in batches
+        let column_list = columns.join(", ");
+        let query = format!("SELECT {} FROM {}", column_list, table_name);
 
         let mut stmt = sqlite_conn.prepare(&query)?;
-        let column_count = stmt.column_count();
 
-        let import_start = Instant::now();
-        let mut batch = Vec::new();
-        let mut batch_num = 0;
+        // Fetch all rows (rusqlite doesn't support streaming easily)
+        let rows: Vec<Vec<serde_json::Value>> = stmt
+            .query_map([], |row| {
+                let mut values = Vec::new();
+                for i in 0..columns.len() {
+                    let value: serde_json::Value = match row.get::<_, rusqlite::types::Value>(i)? {
+                        rusqlite::types::Value::Null => serde_json::Value::Null,
+                        rusqlite::types::Value::Integer(i) => serde_json::Value::from(i),
+                        rusqlite::types::Value::Real(f) => serde_json::Value::from(f),
+                        rusqlite::types::Value::Text(s) => serde_json::Value::String(s),
+                        rusqlite::types::Value::Blob(b) => {
+                            serde_json::Value::String(String::from_utf8_lossy(&b).to_string())
+                        }
+                    };
+                    values.push(value);
+                }
+                Ok(values)
+            })?
+            .collect::<Result<_, rusqlite::Error>>()?;
 
-        let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
-            let mut values = Vec::new();
-            for i in 0..column_count {
-                let value: serde_json::Value = match row.get_ref(i)? {
-                    rusqlite::types::ValueRef::Null => serde_json::Value::Null,
-                    rusqlite::types::ValueRef::Integer(n) => serde_json::Value::Number(n.into()),
-                    rusqlite::types::ValueRef::Real(f) => {
-                        serde_json::Value::Number(serde_json::Number::from_f64(f).unwrap())
-                    }
-                    rusqlite::types::ValueRef::Text(s) => {
-                        serde_json::Value::String(String::from_utf8_lossy(s).to_string())
-                    }
-                    rusqlite::types::ValueRef::Blob(b) => {
-                        serde_json::Value::String(hex::encode(b))
-                    }
-                };
-                values.push(value);
-            }
+        let table_start = Instant::now();
 
-            batch.push(values);
-
-            if batch.len() >= batch_size || batch.len() as i64 == row_count {
-                batch_num += 1;
-                let batch_rows = batch.len();
-                db.insert_rows(table_name, batch, verbose);
-                batch = Vec::new();
+        if batch_size > 0 && rows.len() > batch_size {
+            // Insert in batches
+            for (i, chunk) in rows.chunks(batch_size).enumerate() {
+                let batch_start = Instant::now();
+                db.insert_rows(table_name, chunk.to_vec(), verbose);
+                let batch_elapsed = batch_start.elapsed();
+                let rows_per_sec = chunk.len() as f64 / batch_elapsed.as_secs_f64();
 
                 if verbose {
-                    println!("  Batch {}: {} rows", batch_num, batch_rows);
+                    println!(
+                        "Batch {}: {} rows in {:.2}s ({:.0} rows/sec)",
+                        i + 1,
+                        chunk.len(),
+                        batch_elapsed.as_secs_f64(),
+                        rows_per_sec
+                    );
                 }
+
+                total_rows += chunk.len();
             }
+        } else {
+            // Single batch
+            db.insert_rows(table_name, rows.clone(), verbose);
+            total_rows += rows.len();
         }
 
-        // Insert any remaining rows
-        if !batch.is_empty() {
-            batch_num += 1;
-            let batch_rows = batch.len();
-            db.insert_rows(table_name, batch, verbose);
-
-            if verbose {
-                println!("  Batch {}: {} rows", batch_num, batch_rows);
-            }
-        }
-
-        let import_elapsed = import_start.elapsed();
-        let rows_per_sec = row_count as f64 / import_elapsed.as_secs_f64();
+        let table_elapsed = table_start.elapsed();
+        let rows_per_sec = rows.len() as f64 / table_elapsed.as_secs_f64();
 
         println!(
             "Imported {} rows in {:.2}s ({:.0} rows/sec)",
-            row_count,
-            import_elapsed.as_secs_f64(),
+            rows.len(),
+            table_elapsed.as_secs_f64(),
             rows_per_sec
         );
-
-        // Get cache stats
-        let cache_stats = store.get_cache_stats();
-        println!(
-            "Cache: {} hits, {} misses ({:.1}% hit rate)",
-            cache_stats.cache_hits, cache_stats.cache_misses, cache_stats.hit_rate
-        );
-
-        total_rows += row_count;
         println!();
     }
 
@@ -294,32 +266,9 @@ fn import_sqlite(
     println!("Total rows: {}", total_rows);
     println!("Total time: {:.2}s", total_elapsed.as_secs_f64());
     println!("Average: {:.0} rows/sec", total_rows_per_sec);
-
-    // Get creation stats
-    let creation_stats = store.get_creation_stats();
-    println!("Nodes created: {}", creation_stats.total_leaves_created + creation_stats.total_internals_created);
-    println!("  Leaves: {}", creation_stats.total_leaves_created);
-    println!("  Internals: {}", creation_stats.total_internals_created);
-
-    // Create commit
     println!();
-    println!("Creating commit...");
-    let commit_store_path = repo_path.join("commits.db");
-    let commit_store = Arc::new(SqliteCommitGraphStore::new(&commit_store_path)?);
-    let repo = Repo::new(store.clone(), commit_store.clone(), "prolly-cli".to_string());
-
-    let tree_root = db.get_root_hash();
-    let commit = repo.commit(
-        &tree_root,
-        &format!("Import from {}", sqlite_path.display()),
-        None,
-        None,
-        None,
-    );
-
-    let commit_hash = commit.compute_hash();
-    println!("Commit: {}", hex::encode(&commit_hash[..8]));
-    println!("Branch: main");
+    println!("Root hash: {}", hex::encode(db.get_root_hash()));
+    println!("Total nodes: {}", store.count_nodes());
 
     Ok(())
 }
@@ -515,4 +464,372 @@ fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use prolly_core::ProllyTree;
+    use tempfile::TempDir;
+
+    fn create_test_repo(repo_path: &PathBuf) -> Repo {
+        let store_path = repo_path.join("blocks");
+        let store = Arc::new(CachedFSBlockStore::new(&store_path, 100).unwrap());
+        let commit_store_path = repo_path.join("commits.db");
+        let commit_store = Arc::new(SqliteCommitGraphStore::new(&commit_store_path).unwrap());
+
+        Repo::init_empty(store, commit_store, "test@example.com".to_string())
+    }
+
+    #[test]
+    fn test_import_sqlite_basic() {
+        let temp_dir = TempDir::new().unwrap();
+        let sqlite_path = temp_dir.path().join("test.db");
+        let repo_path = temp_dir.path().join("repo");
+
+        // Create a test SQLite database
+        let conn = Connection::open(&sqlite_path).unwrap();
+        conn.execute(
+            "CREATE TABLE users (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                email TEXT NOT NULL
+            )",
+            [],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO users (id, name, email) VALUES (1, 'Alice', 'alice@example.com')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO users (id, name, email) VALUES (2, 'Bob', 'bob@example.com')",
+            [],
+        )
+        .unwrap();
+        conn.close().unwrap();
+
+        // Call the import function
+        let result = import_sqlite(sqlite_path, repo_path.clone(), 0, 100, false);
+        assert!(result.is_ok());
+
+        // Verify the repo was created
+        assert!(repo_path.join("blocks").exists());
+    }
+
+    #[test]
+    fn test_branch_create_and_list() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path().join("repo");
+        std::fs::create_dir_all(&repo_path).unwrap();
+
+        let repo = create_test_repo(&repo_path);
+
+        // Create a test commit
+        let mut tree = ProllyTree::new(0.01, 42, Some(repo.block_store.clone()));
+        tree.insert_batch(vec![(b"key1".to_vec(), b"value1".to_vec())], false);
+        let tree_root = tree.get_root_hash();
+
+        repo.commit(&tree_root, "Initial commit", None, None, None);
+
+        // Create a new branch
+        let head_commit = repo.resolve_ref("main").unwrap();
+        repo.create_branch("feature", Some(&head_commit)).unwrap();
+
+        // List branches
+        let branches = repo.list_branches();
+        assert_eq!(branches.len(), 2);
+        assert!(branches.iter().any(|(name, _)| name == "main"));
+        assert!(branches.iter().any(|(name, _)| name == "feature"));
+
+        // Both should point to the same commit
+        let main_hash = branches.iter().find(|(name, _)| name == "main").map(|(_, hash)| hash);
+        let feature_hash = branches.iter().find(|(name, _)| name == "feature").map(|(_, hash)| hash);
+        assert_eq!(main_hash, feature_hash);
+    }
+
+    #[test]
+    fn test_checkout_branch() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path().join("repo");
+        std::fs::create_dir_all(&repo_path).unwrap();
+
+        let repo = create_test_repo(&repo_path);
+
+        // Create initial commit on main
+        let mut tree1 = ProllyTree::new(0.01, 42, Some(repo.block_store.clone()));
+        tree1.insert_batch(vec![(b"key1".to_vec(), b"value1".to_vec())], false);
+        let tree_root1 = tree1.get_root_hash();
+        repo.commit(&tree_root1, "First commit", None, None, None);
+
+        // Create a branch and switch to it
+        let main_commit = repo.resolve_ref("main").unwrap();
+        repo.create_branch("develop", Some(&main_commit)).unwrap();
+        repo.checkout("develop").unwrap();
+
+        // Verify we're on develop
+        let (_, head_ref) = repo.get_head();
+        assert_eq!(head_ref, "develop");
+
+        // Create a commit on develop
+        let mut tree2 = ProllyTree::new(0.01, 42, Some(repo.block_store.clone()));
+        tree2.insert_batch(
+            vec![
+                (b"key1".to_vec(), b"value1".to_vec()),
+                (b"key2".to_vec(), b"value2".to_vec()),
+            ],
+            false,
+        );
+        let tree_root2 = tree2.get_root_hash();
+        repo.commit(&tree_root2, "Second commit on develop", None, None, None);
+
+        // Switch back to main
+        repo.checkout("main").unwrap();
+        let (_, head_ref) = repo.get_head();
+        assert_eq!(head_ref, "main");
+
+        // Main should still point to first commit
+        let (main_commit, _) = repo.get_head();
+        assert_eq!(main_commit.unwrap().message, "First commit");
+    }
+
+    #[test]
+    fn test_log_commits() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path().join("repo");
+        std::fs::create_dir_all(&repo_path).unwrap();
+
+        let repo = create_test_repo(&repo_path);
+
+        // Create multiple commits
+        for i in 1..=3 {
+            let mut tree = ProllyTree::new(0.01, 42, Some(repo.block_store.clone()));
+            tree.insert_batch(
+                vec![(format!("key{}", i).into_bytes(), b"value".to_vec())],
+                false,
+            );
+            let tree_root = tree.get_root_hash();
+            repo.commit(&tree_root, &format!("Commit {}", i), None, None, None);
+        }
+
+        // Get log from HEAD
+        let commits = repo.log(None, None);
+        assert_eq!(commits.len(), 4); // 3 commits + initial commit
+
+        // Commits should be in reverse chronological order
+        assert_eq!(commits[0].1.message, "Commit 3");
+        assert_eq!(commits[1].1.message, "Commit 2");
+        assert_eq!(commits[2].1.message, "Commit 1");
+        assert_eq!(commits[3].1.message, "Initial commit");
+
+        // Test with max_count
+        let commits = repo.log(None, Some(2));
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].1.message, "Commit 3");
+        assert_eq!(commits[1].1.message, "Commit 2");
+    }
+
+    #[test]
+    fn test_gc_no_garbage() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path().join("repo");
+        std::fs::create_dir_all(&repo_path).unwrap();
+
+        let repo = create_test_repo(&repo_path);
+
+        // Create a commit
+        let mut tree = ProllyTree::new(0.01, 42, Some(repo.block_store.clone()));
+        tree.insert_batch(
+            vec![
+                (b"a".to_vec(), b"val_a".to_vec()),
+                (b"b".to_vec(), b"val_b".to_vec()),
+            ],
+            false,
+        );
+        let tree_root = tree.get_root_hash();
+        repo.commit(&tree_root, "Test commit", None, None, None);
+
+        // Run GC - should find no garbage since all nodes are reachable
+        let tree_roots = repo.get_reachable_tree_roots();
+        let stats = garbage_collect(repo.block_store.as_ref(), &tree_roots, true);
+
+        assert_eq!(stats.garbage_nodes, 0);
+        assert!(stats.reachable_nodes > 0);
+    }
+
+    #[test]
+    fn test_gc_with_garbage() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path().join("repo");
+        std::fs::create_dir_all(&repo_path).unwrap();
+
+        let repo = create_test_repo(&repo_path);
+
+        // Create first commit
+        let mut tree1 = ProllyTree::new(0.01, 42, Some(repo.block_store.clone()));
+        tree1.insert_batch(vec![(b"key1".to_vec(), b"value1".to_vec())], false);
+        let tree_root1 = tree1.get_root_hash();
+        repo.commit(&tree_root1, "First commit", None, None, None);
+
+        // Create an orphaned tree (not committed)
+        let mut orphan_tree = ProllyTree::new(0.01, 42, Some(repo.block_store.clone()));
+        orphan_tree.insert_batch(vec![(b"orphan".to_vec(), b"data".to_vec())], false);
+        let _orphan_root = orphan_tree.get_root_hash();
+
+        let nodes_before = repo.block_store.count_nodes();
+
+        // Run GC - should find the orphaned nodes
+        let tree_roots = repo.get_reachable_tree_roots();
+        let stats = garbage_collect(repo.block_store.as_ref(), &tree_roots, false);
+
+        assert!(stats.garbage_nodes > 0, "Should have found garbage nodes");
+
+        let nodes_after = repo.block_store.count_nodes();
+        assert!(nodes_after < nodes_before, "Should have removed nodes");
+        assert_eq!(nodes_after, stats.reachable_nodes);
+    }
+
+    #[test]
+    fn test_gc_dry_run() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path().join("repo");
+        std::fs::create_dir_all(&repo_path).unwrap();
+
+        let repo = create_test_repo(&repo_path);
+
+        // Create commit and orphan
+        let mut tree1 = ProllyTree::new(0.01, 42, Some(repo.block_store.clone()));
+        tree1.insert_batch(vec![(b"key1".to_vec(), b"value1".to_vec())], false);
+        let tree_root1 = tree1.get_root_hash();
+        repo.commit(&tree_root1, "First commit", None, None, None);
+
+        let mut orphan_tree = ProllyTree::new(0.01, 42, Some(repo.block_store.clone()));
+        orphan_tree.insert_batch(vec![(b"orphan".to_vec(), b"data".to_vec())], false);
+
+        let nodes_before = repo.block_store.count_nodes();
+
+        // Run GC in dry-run mode
+        let tree_roots = repo.get_reachable_tree_roots();
+        let stats = garbage_collect(repo.block_store.as_ref(), &tree_roots, true);
+
+        let nodes_after = repo.block_store.count_nodes();
+
+        // Dry run should not remove anything
+        assert_eq!(nodes_before, nodes_after);
+        assert!(stats.garbage_nodes > 0, "Should have reported garbage nodes");
+    }
+
+    #[test]
+    fn test_resolve_ref_head_tilde() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path().join("repo");
+        std::fs::create_dir_all(&repo_path).unwrap();
+
+        let repo = create_test_repo(&repo_path);
+
+        // Create multiple commits
+        let mut commits = Vec::new();
+        for i in 1..=3 {
+            let mut tree = ProllyTree::new(0.01, 42, Some(repo.block_store.clone()));
+            tree.insert_batch(
+                vec![(format!("key{}", i).into_bytes(), b"value".to_vec())],
+                false,
+            );
+            let tree_root = tree.get_root_hash();
+            let commit = repo.commit(&tree_root, &format!("Commit {}", i), None, None, None);
+            let commit_hash = commit.compute_hash();
+            commits.push(commit_hash);
+        }
+
+        // Test HEAD resolves to latest commit
+        let head = repo.resolve_ref("HEAD").unwrap();
+        assert_eq!(head, commits[2]); // commits[2] is "Commit 3"
+
+        // Test HEAD~1 resolves to parent
+        let head_1 = repo.resolve_ref("HEAD~1").unwrap();
+        assert_eq!(head_1, commits[1]);
+
+        // Test HEAD~2
+        let head_2 = repo.resolve_ref("HEAD~2").unwrap();
+        assert_eq!(head_2, commits[0]);
+    }
+
+    #[test]
+    fn test_branch_cmd_creates_branch() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path().join("repo");
+        std::fs::create_dir_all(&repo_path).unwrap();
+
+        let repo = create_test_repo(&repo_path);
+
+        // Create a commit
+        let mut tree = ProllyTree::new(0.01, 42, Some(repo.block_store.clone()));
+        tree.insert_batch(vec![(b"test".to_vec(), b"data".to_vec())], false);
+        let tree_root = tree.get_root_hash();
+        repo.commit(&tree_root, "Test", None, None, None);
+
+        // Use the CLI function to create a branch
+        let result = branch_cmd(repo_path.clone(), Some("feature".to_string()), None, 100);
+        assert!(result.is_ok());
+
+        // Verify branch was created
+        let branches = repo.list_branches();
+        assert!(branches.iter().any(|(name, _)| name == "feature"));
+    }
+
+    #[test]
+    fn test_checkout_cmd_switches_branch() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path().join("repo");
+        std::fs::create_dir_all(&repo_path).unwrap();
+
+        let repo = create_test_repo(&repo_path);
+
+        // Create commits and branch
+        let mut tree = ProllyTree::new(0.01, 42, Some(repo.block_store.clone()));
+        tree.insert_batch(vec![(b"test".to_vec(), b"data".to_vec())], false);
+        let tree_root = tree.get_root_hash();
+        repo.commit(&tree_root, "Test", None, None, None);
+
+        let main_commit = repo.resolve_ref("main").unwrap();
+        repo.create_branch("develop", Some(&main_commit)).unwrap();
+
+        // Use the CLI function to checkout
+        let result = checkout_cmd(repo_path.clone(), "develop".to_string(), 100);
+        assert!(result.is_ok());
+
+        // Verify we switched
+        let (_, head_ref) = repo.get_head();
+        assert_eq!(head_ref, "develop");
+    }
+
+    #[test]
+    fn test_gc_repo_dry_run() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path().join("repo");
+        std::fs::create_dir_all(&repo_path).unwrap();
+
+        let repo = create_test_repo(&repo_path);
+
+        // Create commit and orphan
+        let mut tree = ProllyTree::new(0.01, 42, Some(repo.block_store.clone()));
+        tree.insert_batch(vec![(b"test".to_vec(), b"data".to_vec())], false);
+        let tree_root = tree.get_root_hash();
+        repo.commit(&tree_root, "Test", None, None, None);
+
+        let mut orphan = ProllyTree::new(0.01, 42, Some(repo.block_store.clone()));
+        orphan.insert_batch(vec![(b"orphan".to_vec(), b"data".to_vec())], false);
+
+        let nodes_before = repo.block_store.count_nodes();
+
+        // Run GC via CLI function
+        let result = gc_repo(repo_path.clone(), true, 100);
+        assert!(result.is_ok());
+
+        // Verify dry run didn't remove nodes
+        let nodes_after = repo.block_store.count_nodes();
+        assert_eq!(nodes_before, nodes_after);
+    }
 }
