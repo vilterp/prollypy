@@ -1,7 +1,7 @@
 mod sqlite_commit_store;
 
 use clap::{Parser, Subcommand};
-use prolly_core::{garbage_collect, BlockStore, CachedFSBlockStore, ProllyTree, TreeCursor, DB, Repo};
+use prolly_core::{garbage_collect, BlockStore, CachedFSBlockStore, ProllyTree, TreeCursor, DB, Repo, Differ, DiffEvent};
 use rusqlite::Connection;
 use sqlite_commit_store::SqliteCommitGraphStore;
 use std::path::PathBuf;
@@ -150,6 +150,71 @@ enum Commands {
         /// Commit message (default: "Set {key} = {value}")
         #[arg(short, long)]
         message: Option<String>,
+
+        /// Cache size for block store
+        #[arg(short, long, default_value = "10000")]
+        cache_size: usize,
+    },
+
+    /// Dump all key-value pairs from a ref or HEAD
+    Dump {
+        /// Path to prolly repository
+        #[arg(short, long, default_value = ".prolly")]
+        repo: PathBuf,
+
+        /// Ref or commit to read from (default: HEAD)
+        #[arg(long)]
+        from: Option<String>,
+
+        /// Optional key prefix to filter dump
+        #[arg(short, long)]
+        prefix: Option<String>,
+
+        /// Cache size for block store
+        #[arg(short, long, default_value = "10000")]
+        cache_size: usize,
+    },
+
+    /// Diff two commits or refs
+    Diff {
+        /// Path to prolly repository
+        #[arg(short, long, default_value = ".prolly")]
+        repo: PathBuf,
+
+        /// Old ref/commit (default: HEAD~)
+        #[arg(long)]
+        old: Option<String>,
+
+        /// New ref/commit (default: HEAD)
+        #[arg(long)]
+        new: Option<String>,
+
+        /// Optional key prefix to filter diff results
+        #[arg(short, long)]
+        prefix: Option<String>,
+
+        /// Maximum number of diff events to display
+        #[arg(short, long)]
+        limit: Option<usize>,
+
+        /// Cache size for block store
+        #[arg(short, long, default_value = "10000")]
+        cache_size: usize,
+    },
+
+    /// Print tree structure for a ref or commit
+    PrintTree {
+        /// Path to prolly repository
+        #[arg(short, long, default_value = ".prolly")]
+        repo: PathBuf,
+
+        /// Ref or commit to visualize (default: HEAD)
+        #[arg(long)]
+        from: Option<String>,
+
+        /// Verbose mode - show all leaf node values
+        #[arg(short, long)]
+        verbose: bool,
 
         /// Cache size for block store
         #[arg(short, long, default_value = "10000")]
@@ -663,6 +728,330 @@ fn set_key(
     Ok(())
 }
 
+fn dump_cmd(
+    repo_path: PathBuf,
+    from: Option<String>,
+    prefix: Option<String>,
+    cache_size: usize,
+) -> anyhow::Result<()> {
+    check_repo_exists(&repo_path)?;
+
+    let store_path = repo_path.join("blocks");
+    let store = Arc::new(CachedFSBlockStore::new(&store_path, cache_size)?);
+    let commit_store_path = repo_path.join("commits.db");
+    let commit_store = Arc::new(SqliteCommitGraphStore::new(&commit_store_path)?);
+    let repo = Repo::new(store.clone(), commit_store, "prolly-cli".to_string());
+
+    // Determine which commit to read from
+    let (commit, ref_display) = if let Some(ref_name) = from {
+        let commit_hash = repo.resolve_ref(&ref_name).ok_or_else(|| {
+            anyhow::anyhow!("Ref '{}' not found", ref_name)
+        })?;
+        let commit = repo.commit_graph_store.get_commit(&commit_hash).ok_or_else(|| {
+            anyhow::anyhow!("Commit not found")
+        })?;
+        (commit, ref_name)
+    } else {
+        let (head_commit, ref_name) = repo.get_head();
+        let commit = head_commit.ok_or_else(|| {
+            anyhow::anyhow!("No commits in repository")
+        })?;
+        (commit, format!("HEAD ({})", ref_name))
+    };
+
+    println!("================================================================================");
+    println!("Dumping from {}", ref_display);
+    println!("================================================================================");
+    println!("Tree root hash: {}", hex::encode(&commit.tree_root));
+
+    // Load tree with pattern and seed from commit
+    let mut tree = ProllyTree::new(commit.pattern, commit.seed as u32, Some(store.clone()));
+
+    // Try to load the root node. If it doesn't exist (empty tree), use a new empty tree
+    if let Some(root_node) = store.get_node(&commit.tree_root) {
+        tree.root = root_node;
+    }
+
+    // Get prefix bytes if provided
+    let prefix_bytes = prefix.as_ref().map(|p| p.as_bytes());
+    let prefix_str = prefix.as_deref().unwrap_or("");
+
+    println!("\nKeys with prefix: '{}'", prefix_str);
+    println!("--------------------------------------------------------------------------------");
+
+    // Use TreeCursor to iterate with optional prefix
+    let root_hash = tree.get_root_hash();
+    let mut cursor = TreeCursor::new(store.as_ref(), root_hash, prefix_bytes);
+    let mut count = 0;
+
+    while let Some((key, value)) = cursor.next() {
+        // If we have a prefix, check if we've moved past it
+        if let Some(prefix_bytes) = prefix_bytes {
+            if !key.starts_with(prefix_bytes) {
+                break;
+            }
+        }
+
+        // Print key-value pair
+        let key_str = String::from_utf8_lossy(&key);
+        let value_str = String::from_utf8_lossy(&value);
+        println!("{} => {}", key_str, value_str);
+        count += 1;
+    }
+
+    println!("================================================================================");
+    println!("Total: {} keys found", count);
+
+    Ok(())
+}
+
+fn diff_cmd(
+    repo_path: PathBuf,
+    old: Option<String>,
+    new: Option<String>,
+    prefix: Option<String>,
+    limit: Option<usize>,
+    cache_size: usize,
+) -> anyhow::Result<()> {
+    check_repo_exists(&repo_path)?;
+
+    let store_path = repo_path.join("blocks");
+    let store = Arc::new(CachedFSBlockStore::new(&store_path, cache_size)?);
+    let commit_store_path = repo_path.join("commits.db");
+    let commit_store = Arc::new(SqliteCommitGraphStore::new(&commit_store_path)?);
+    let repo = Repo::new(store.clone(), commit_store, "prolly-cli".to_string());
+
+    // Default to HEAD~ vs HEAD
+    let old_ref = old.unwrap_or_else(|| "HEAD~".to_string());
+    let new_ref = new.unwrap_or_else(|| "HEAD".to_string());
+
+    // Resolve old ref
+    let old_commit_hash = repo.resolve_ref(&old_ref).ok_or_else(|| {
+        anyhow::anyhow!("Ref '{}' not found", old_ref)
+    })?;
+    let old_commit = repo.commit_graph_store.get_commit(&old_commit_hash).ok_or_else(|| {
+        anyhow::anyhow!("Commit not found")
+    })?;
+
+    // Resolve new ref
+    let new_commit_hash = repo.resolve_ref(&new_ref).ok_or_else(|| {
+        anyhow::anyhow!("Ref '{}' not found", new_ref)
+    })?;
+    let new_commit = repo.commit_graph_store.get_commit(&new_commit_hash).ok_or_else(|| {
+        anyhow::anyhow!("Commit not found")
+    })?;
+
+    println!("================================================================================");
+    println!("DIFF: Comparing two commits");
+    println!("================================================================================");
+    println!("Old: {} (tree: {}...)", old_ref, hex::encode(&old_commit.tree_root[..8]));
+    println!("New: {} (tree: {}...)", new_ref, hex::encode(&new_commit.tree_root[..8]));
+    if let Some(ref p) = prefix {
+        println!("Prefix: {}", p);
+    }
+
+    if old_commit.tree_root == new_commit.tree_root {
+        println!("\nTrees are identical (same root hash)");
+        return Ok(());
+    }
+
+    // Create Differ instance
+    let mut differ = Differ::new(store.as_ref());
+
+    println!("\nDiff events (old -> new):");
+    println!("--------------------------------------------------------------------------------");
+
+    // Get prefix bytes if provided
+    let prefix_bytes = prefix.as_ref().map(|p| p.as_bytes());
+
+    // Run diff
+    let events = differ.diff(&old_commit.tree_root, &new_commit.tree_root, prefix_bytes);
+
+    let mut event_count = 0;
+    let mut added_count = 0;
+    let mut deleted_count = 0;
+    let mut modified_count = 0;
+
+    for event in &events {
+        event_count += 1;
+
+        if limit.is_none() || event_count <= limit.unwrap() {
+            match event {
+                DiffEvent::Added(added) => {
+                    let key_str = String::from_utf8_lossy(&added.key);
+                    let value_str = String::from_utf8_lossy(&added.value);
+                    println!("+ {} = {}", key_str, value_str);
+                    added_count += 1;
+                }
+                DiffEvent::Deleted(deleted) => {
+                    let key_str = String::from_utf8_lossy(&deleted.key);
+                    let value_str = String::from_utf8_lossy(&deleted.old_value);
+                    println!("- {} = {}", key_str, value_str);
+                    deleted_count += 1;
+                }
+                DiffEvent::Modified(modified) => {
+                    let key_str = String::from_utf8_lossy(&modified.key);
+                    let old_str = String::from_utf8_lossy(&modified.old_value);
+                    let new_str = String::from_utf8_lossy(&modified.new_value);
+                    println!("M {}: {} -> {}", key_str, old_str, new_str);
+                    modified_count += 1;
+                }
+            }
+        } else {
+            // Just count without printing
+            match event {
+                DiffEvent::Added(_) => added_count += 1,
+                DiffEvent::Deleted(_) => deleted_count += 1,
+                DiffEvent::Modified(_) => modified_count += 1,
+            }
+        }
+    }
+
+    println!("--------------------------------------------------------------------------------");
+    println!("\nDiff Summary:");
+    println!("  Added:    {}", added_count);
+    println!("  Deleted:  {}", deleted_count);
+    println!("  Modified: {}", modified_count);
+    println!("  Total:    {}", event_count);
+
+    if let Some(limit) = limit {
+        if event_count > limit {
+            println!("\n(showing first {}, {} more events omitted)", limit, event_count - limit);
+        }
+    }
+
+    // Print diff statistics
+    let diff_stats = differ.get_stats();
+    println!("\nDiff Algorithm Statistics:");
+    println!("  Subtrees skipped (identical hashes): {}", diff_stats.subtrees_skipped);
+    println!("  Nodes compared:                      {}", diff_stats.nodes_compared);
+
+    Ok(())
+}
+
+fn print_tree_cmd(
+    repo_path: PathBuf,
+    from: Option<String>,
+    verbose: bool,
+    cache_size: usize,
+) -> anyhow::Result<()> {
+    check_repo_exists(&repo_path)?;
+
+    let store_path = repo_path.join("blocks");
+    let store = Arc::new(CachedFSBlockStore::new(&store_path, cache_size)?);
+    let commit_store_path = repo_path.join("commits.db");
+    let commit_store = Arc::new(SqliteCommitGraphStore::new(&commit_store_path)?);
+    let repo = Repo::new(store.clone(), commit_store, "prolly-cli".to_string());
+
+    // Default to HEAD if no ref provided
+    let ref_name = from.unwrap_or_else(|| "HEAD".to_string());
+
+    // Resolve ref to commit
+    let commit_hash = repo.resolve_ref(&ref_name).ok_or_else(|| {
+        anyhow::anyhow!("Ref '{}' not found", ref_name)
+    })?;
+    let commit = repo.commit_graph_store.get_commit(&commit_hash).ok_or_else(|| {
+        anyhow::anyhow!("Commit not found")
+    })?;
+
+    println!("================================================================================");
+    println!("TREE STRUCTURE");
+    println!("================================================================================");
+    println!("Ref:       {}", ref_name);
+    println!("Commit:    {}", hex::encode(&commit_hash[..8]));
+    println!("Tree root: {}", hex::encode(&commit.tree_root));
+    if !verbose {
+        println!("Mode:      compact (use --verbose to show all leaf values)");
+    }
+
+    // Create tree with pattern and seed from commit
+    let mut tree = ProllyTree::new(commit.pattern, commit.seed as u32, Some(store.clone()));
+
+    // Try to load the root node
+    if let Some(root_node) = store.get_node(&commit.tree_root) {
+        tree.root = root_node;
+    } else {
+        println!("\nError: Tree root not found in store");
+        return Ok(());
+    }
+
+    // Print the tree structure
+    let label = format!("root={}", hex::encode(&commit.tree_root[..8]));
+    print_tree_recursive(
+        &tree.root,
+        &commit.tree_root,
+        store.as_ref(),
+        &label,
+        "",
+        true,
+        verbose,
+    );
+
+    Ok(())
+}
+
+fn print_tree_recursive(
+    node: &prolly_core::Node,
+    node_hash: &[u8],
+    store: &dyn BlockStore,
+    _label: &str,
+    prefix: &str,
+    is_last: bool,
+    verbose: bool,
+) {
+    let branch = if is_last { "└── " } else { "├── " };
+    let hash_str = hex::encode(&node_hash[..8]);
+
+    if node.is_leaf {
+        if verbose {
+            // Show all key-value pairs
+            let mut data = Vec::new();
+            for i in 0..node.keys.len() {
+                let key = String::from_utf8_lossy(&node.keys[i]);
+                let value = String::from_utf8_lossy(&node.values[i]);
+                data.push(format!("({}, {})", key, value));
+            }
+            println!("{}{}LEAF #{}: [{}]", prefix, branch, hash_str, data.join(", "));
+        } else {
+            // Show only first and last keys, and the count
+            let count = node.keys.len();
+            if count == 0 {
+                println!("{}{}LEAF #{}: (empty)", prefix, branch, hash_str);
+            } else if count == 1 {
+                let key = String::from_utf8_lossy(&node.keys[0]);
+                println!("{}{}LEAF #{}: [{}] (1 key)", prefix, branch, hash_str, key);
+            } else {
+                let first_key = String::from_utf8_lossy(&node.keys[0]);
+                let last_key = String::from_utf8_lossy(&node.keys[count - 1]);
+                println!("{}{}LEAF #{}: [{} ... {}] ({} keys)", prefix, branch, hash_str, first_key, last_key, count);
+            }
+        }
+    } else {
+        // Internal node - print keys
+        let keys_str: Vec<String> = node.keys.iter()
+            .map(|k| String::from_utf8_lossy(k).to_string())
+            .collect();
+        println!("{}{}INTERNAL #{}: keys=[{}]", prefix, branch, hash_str, keys_str.join(", "));
+
+        // Print children
+        let extension = if is_last { "    " } else { "│   " };
+        for (i, child_hash) in node.values.iter().enumerate() {
+            if let Some(child_node) = store.get_node(child_hash) {
+                let child_is_last = i == node.values.len() - 1;
+                print_tree_recursive(
+                    &child_node,
+                    child_hash,
+                    store,
+                    "",
+                    &format!("{}{}", prefix, extension),
+                    child_is_last,
+                    verbose,
+                );
+            }
+        }
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
@@ -710,6 +1099,26 @@ fn main() -> anyhow::Result<()> {
             message,
             cache_size,
         } => set_key(repo, key, value, message, cache_size)?,
+        Commands::Dump {
+            repo,
+            from,
+            prefix,
+            cache_size,
+        } => dump_cmd(repo, from, prefix, cache_size)?,
+        Commands::Diff {
+            repo,
+            old,
+            new,
+            prefix,
+            limit,
+            cache_size,
+        } => diff_cmd(repo, old, new, prefix, limit, cache_size)?,
+        Commands::PrintTree {
+            repo,
+            from,
+            verbose,
+            cache_size,
+        } => print_tree_cmd(repo, from, verbose, cache_size)?,
     }
 
     Ok(())
@@ -1272,6 +1681,218 @@ mod tests {
 
         // Get from HEAD should have updated value
         let result = get_key(repo_path, "mykey".to_string(), None, 100);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_dump_cmd() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path().join("repo");
+        std::fs::create_dir_all(&repo_path).unwrap();
+
+        create_test_repo(&repo_path);
+
+        // Set some keys
+        set_key(
+            repo_path.clone(),
+            "key1".to_string(),
+            "value1".to_string(),
+            None,
+            100,
+        )
+        .unwrap();
+
+        set_key(
+            repo_path.clone(),
+            "key2".to_string(),
+            "value2".to_string(),
+            None,
+            100,
+        )
+        .unwrap();
+
+        set_key(
+            repo_path.clone(),
+            "prefix/key3".to_string(),
+            "value3".to_string(),
+            None,
+            100,
+        )
+        .unwrap();
+
+        // Test dump without prefix
+        let result = dump_cmd(repo_path.clone(), None, None, 100);
+        assert!(result.is_ok());
+
+        // Test dump with prefix
+        let result = dump_cmd(repo_path.clone(), None, Some("prefix/".to_string()), 100);
+        assert!(result.is_ok());
+
+        // Test dump from specific ref
+        let result = dump_cmd(repo_path, Some("HEAD".to_string()), None, 100);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_diff_cmd() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path().join("repo");
+        std::fs::create_dir_all(&repo_path).unwrap();
+
+        let repo = create_test_repo(&repo_path);
+
+        // Set initial key
+        set_key(
+            repo_path.clone(),
+            "key1".to_string(),
+            "value1".to_string(),
+            None,
+            100,
+        )
+        .unwrap();
+
+        // Create a branch at this point
+        let commit = repo.resolve_ref("main").unwrap();
+        repo.create_branch("old", Some(&commit)).unwrap();
+
+        // Modify the key
+        set_key(
+            repo_path.clone(),
+            "key1".to_string(),
+            "value2".to_string(),
+            None,
+            100,
+        )
+        .unwrap();
+
+        // Add a new key
+        set_key(
+            repo_path.clone(),
+            "key2".to_string(),
+            "newvalue".to_string(),
+            None,
+            100,
+        )
+        .unwrap();
+
+        // Test diff between old and HEAD
+        let result = diff_cmd(
+            repo_path.clone(),
+            Some("old".to_string()),
+            Some("HEAD".to_string()),
+            None,
+            None,
+            100,
+        );
+        assert!(result.is_ok());
+
+        // Test diff with limit
+        let result = diff_cmd(
+            repo_path.clone(),
+            Some("old".to_string()),
+            Some("HEAD".to_string()),
+            None,
+            Some(1),
+            100,
+        );
+        assert!(result.is_ok());
+
+        // Test diff with prefix
+        let result = diff_cmd(
+            repo_path,
+            Some("old".to_string()),
+            Some("HEAD".to_string()),
+            Some("key1".to_string()),
+            None,
+            100,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_print_tree_cmd() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path().join("repo");
+        std::fs::create_dir_all(&repo_path).unwrap();
+
+        create_test_repo(&repo_path);
+
+        // Set some keys to create a non-empty tree
+        set_key(
+            repo_path.clone(),
+            "key1".to_string(),
+            "value1".to_string(),
+            None,
+            100,
+        )
+        .unwrap();
+
+        set_key(
+            repo_path.clone(),
+            "key2".to_string(),
+            "value2".to_string(),
+            None,
+            100,
+        )
+        .unwrap();
+
+        // Test print tree in compact mode
+        let result = print_tree_cmd(repo_path.clone(), None, false, 100);
+        assert!(result.is_ok());
+
+        // Test print tree in verbose mode
+        let result = print_tree_cmd(repo_path.clone(), Some("HEAD".to_string()), true, 100);
+        assert!(result.is_ok());
+
+        // Test print tree from specific ref
+        let result = print_tree_cmd(repo_path, Some("main".to_string()), false, 100);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_diff_identical_trees() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path().join("repo");
+        std::fs::create_dir_all(&repo_path).unwrap();
+
+        let repo = create_test_repo(&repo_path);
+
+        // Set a key
+        set_key(
+            repo_path.clone(),
+            "key1".to_string(),
+            "value1".to_string(),
+            None,
+            100,
+        )
+        .unwrap();
+
+        // Create a branch - should be identical to main
+        let commit = repo.resolve_ref("main").unwrap();
+        repo.create_branch("same", Some(&commit)).unwrap();
+
+        // Diff identical trees should succeed
+        let result = diff_cmd(
+            repo_path,
+            Some("main".to_string()),
+            Some("same".to_string()),
+            None,
+            None,
+            100,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_dump_empty_tree() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path().join("repo");
+        std::fs::create_dir_all(&repo_path).unwrap();
+
+        create_test_repo(&repo_path);
+
+        // Dump empty tree should succeed
+        let result = dump_cmd(repo_path, None, None, 100);
         assert!(result.is_ok());
     }
 }
