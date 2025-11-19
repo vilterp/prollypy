@@ -259,7 +259,7 @@ fn init_repo(repo_path: PathBuf, author: String) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn check_repo_exists(repo_path: &PathBuf) -> anyhow::Result<()> {
+fn open_repo(repo_path: &PathBuf, cache_size: usize) -> anyhow::Result<Repo> {
     if !repo_path.exists() {
         return Err(anyhow::anyhow!(
             "Repository not found at {}. Run 'prolly init' first.",
@@ -275,7 +275,12 @@ fn check_repo_exists(repo_path: &PathBuf) -> anyhow::Result<()> {
         ));
     }
 
-    Ok(())
+    let store_path = repo_path.join("blocks");
+    let store = Arc::new(CachedFSBlockStore::new(&store_path, cache_size)?);
+    let commit_store = Arc::new(SqliteCommitGraphStore::new(&commit_db)?);
+    let repo = Repo::new(store, commit_store, "prolly-cli".to_string());
+
+    Ok(repo)
 }
 
 fn import_sqlite(
@@ -285,7 +290,7 @@ fn import_sqlite(
     cache_size: usize,
     verbose: bool,
 ) -> anyhow::Result<()> {
-    check_repo_exists(&repo_path)?;
+    let repo = open_repo(&repo_path, cache_size)?;
 
     println!("Importing SQLite database: {}", sqlite_path.display());
     println!("Target repository: {}", repo_path.display());
@@ -307,12 +312,8 @@ fn import_sqlite(
     println!("Found {} tables", table_names.len());
     println!();
 
-    // Create block store
-    let store_path = repo_path.join("blocks");
-    let store = Arc::new(CachedFSBlockStore::new(&store_path, cache_size)?);
-
     // Create database
-    let mut db = DB::new(store.clone(), 0.01, 42);
+    let mut db = DB::new(repo.block_store.clone(), 0.01, 42);
 
     let total_start = Instant::now();
     let mut total_rows = 0;
@@ -451,23 +452,31 @@ fn import_sqlite(
     println!("Average: {:.0} rows/sec", total_rows_per_sec);
     println!();
     println!("Root hash: {}", hex::encode(db.get_root_hash()));
-    println!("Total nodes: {}", store.count_nodes());
+    println!("Total nodes: {}", repo.block_store.count_nodes());
+    println!();
+
+    // Create a commit for the imported data
+    let root_hash = db.get_root_hash();
+    let commit_message = format!(
+        "Import from {}: {} rows from {} tables",
+        sqlite_path.display(),
+        total_rows,
+        table_names.len()
+    );
+    let commit = repo.commit(&root_hash, &commit_message, None, None, None);
+    let commit_hash = commit.compute_hash();
+
+    println!("Created commit: {}", hex::encode(&commit_hash[..8]));
+    println!("Message: {}", commit_message);
 
     Ok(())
 }
 
 fn gc_repo(repo_path: PathBuf, dry_run: bool, cache_size: usize) -> anyhow::Result<()> {
-    check_repo_exists(&repo_path)?;
+    let repo = open_repo(&repo_path, cache_size)?;
 
     println!("Garbage collecting repository: {}", repo_path.display());
     println!("Mode: {}", if dry_run { "dry-run" } else { "live" });
-
-    // Open the repository
-    let store_path = repo_path.join("blocks");
-    let store = Arc::new(CachedFSBlockStore::new(&store_path, cache_size)?);
-    let commit_store_path = repo_path.join("commits.db");
-    let commit_store = Arc::new(SqliteCommitGraphStore::new(&commit_store_path)?);
-    let repo = Repo::new(store.clone(), commit_store, "prolly-cli".to_string());
 
     println!();
     println!("Finding reachable tree roots...");
@@ -477,7 +486,7 @@ fn gc_repo(repo_path: PathBuf, dry_run: bool, cache_size: usize) -> anyhow::Resu
     println!();
     println!("Running garbage collection...");
     let start = Instant::now();
-    let stats = garbage_collect(store.as_ref(), &tree_roots, dry_run);
+    let stats = garbage_collect(repo.block_store.as_ref(), &tree_roots, dry_run);
     let elapsed = start.elapsed();
 
     println!();
@@ -513,13 +522,7 @@ fn branch_cmd(
     from: Option<String>,
     cache_size: usize,
 ) -> anyhow::Result<()> {
-    check_repo_exists(&repo_path)?;
-
-    let store_path = repo_path.join("blocks");
-    let store = Arc::new(CachedFSBlockStore::new(&store_path, cache_size)?);
-    let commit_store_path = repo_path.join("commits.db");
-    let commit_store = Arc::new(SqliteCommitGraphStore::new(&commit_store_path)?);
-    let repo = Repo::new(store, commit_store, "prolly-cli".to_string());
+    let repo = open_repo(&repo_path, cache_size)?;
 
     if let Some(branch_name) = name {
         // Create a new branch
@@ -559,13 +562,7 @@ fn branch_cmd(
 }
 
 fn checkout_cmd(repo_path: PathBuf, branch: String, cache_size: usize) -> anyhow::Result<()> {
-    check_repo_exists(&repo_path)?;
-
-    let store_path = repo_path.join("blocks");
-    let store = Arc::new(CachedFSBlockStore::new(&store_path, cache_size)?);
-    let commit_store_path = repo_path.join("commits.db");
-    let commit_store = Arc::new(SqliteCommitGraphStore::new(&commit_store_path)?);
-    let repo = Repo::new(store, commit_store, "prolly-cli".to_string());
+    let repo = open_repo(&repo_path, cache_size)?;
 
     repo.checkout(&branch)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -587,13 +584,7 @@ fn log_cmd(
     max_count: Option<usize>,
     cache_size: usize,
 ) -> anyhow::Result<()> {
-    check_repo_exists(&repo_path)?;
-
-    let store_path = repo_path.join("blocks");
-    let store = Arc::new(CachedFSBlockStore::new(&store_path, cache_size)?);
-    let commit_store_path = repo_path.join("commits.db");
-    let commit_store = Arc::new(SqliteCommitGraphStore::new(&commit_store_path)?);
-    let repo = Repo::new(store, commit_store, "prolly-cli".to_string());
+    let repo = open_repo(&repo_path, cache_size)?;
 
     let commits = repo.log(start.as_deref(), max_count);
 
@@ -625,13 +616,7 @@ fn get_key(
     from: Option<String>,
     cache_size: usize,
 ) -> anyhow::Result<()> {
-    check_repo_exists(&repo_path)?;
-
-    let store_path = repo_path.join("blocks");
-    let store = Arc::new(CachedFSBlockStore::new(&store_path, cache_size)?);
-    let commit_store_path = repo_path.join("commits.db");
-    let commit_store = Arc::new(SqliteCommitGraphStore::new(&commit_store_path)?);
-    let repo = Repo::new(store.clone(), commit_store, "prolly-cli".to_string());
+    let repo = open_repo(&repo_path, cache_size)?;
 
     // Determine which commit to read from
     let (commit, ref_display) = if let Some(ref_name) = from {
@@ -651,17 +636,17 @@ fn get_key(
     };
 
     // Load tree with pattern and seed from commit
-    let mut tree = ProllyTree::new(commit.pattern, commit.seed as u32, Some(store.clone()));
+    let mut tree = ProllyTree::new(commit.pattern, commit.seed as u32, Some(repo.block_store.clone()));
 
     // Try to load the root node. If it doesn't exist (empty tree), use a new empty tree
-    if let Some(root_node) = store.get_node(&commit.tree_root) {
+    if let Some(root_node) = repo.block_store.get_node(&commit.tree_root) {
         tree.root = root_node;
     }
     // else: tree already has an empty root from ProllyTree::new()
 
     // Search for the key using cursor
     let key_bytes = key.as_bytes().to_vec();
-    let mut cursor = TreeCursor::new(store.as_ref(), tree.get_root_hash(), Some(&key_bytes));
+    let mut cursor = TreeCursor::new(repo.block_store.as_ref(), tree.get_root_hash(), Some(&key_bytes));
 
     if let Some((found_key, value)) = cursor.next() {
         if found_key == key_bytes {
@@ -686,13 +671,7 @@ fn set_key(
     message: Option<String>,
     cache_size: usize,
 ) -> anyhow::Result<()> {
-    check_repo_exists(&repo_path)?;
-
-    let store_path = repo_path.join("blocks");
-    let store = Arc::new(CachedFSBlockStore::new(&store_path, cache_size)?);
-    let commit_store_path = repo_path.join("commits.db");
-    let commit_store = Arc::new(SqliteCommitGraphStore::new(&commit_store_path)?);
-    let repo = Repo::new(store.clone(), commit_store, "prolly-cli".to_string());
+    let repo = open_repo(&repo_path, cache_size)?;
 
     // Get current HEAD
     let (head_commit, ref_name) = repo.get_head();
@@ -701,10 +680,10 @@ fn set_key(
     })?;
 
     // Load current tree with pattern and seed from commit
-    let mut tree = ProllyTree::new(head_commit.pattern, head_commit.seed as u32, Some(store.clone()));
+    let mut tree = ProllyTree::new(head_commit.pattern, head_commit.seed as u32, Some(repo.block_store.clone()));
 
     // Try to load the root node. If it doesn't exist (empty tree), use a new empty tree
-    if let Some(root_node) = store.get_node(&head_commit.tree_root) {
+    if let Some(root_node) = repo.block_store.get_node(&head_commit.tree_root) {
         tree.root = root_node;
     }
     // else: tree already has an empty root from ProllyTree::new()
@@ -747,13 +726,7 @@ fn dump_cmd(
     prefix: Option<String>,
     cache_size: usize,
 ) -> anyhow::Result<()> {
-    check_repo_exists(&repo_path)?;
-
-    let store_path = repo_path.join("blocks");
-    let store = Arc::new(CachedFSBlockStore::new(&store_path, cache_size)?);
-    let commit_store_path = repo_path.join("commits.db");
-    let commit_store = Arc::new(SqliteCommitGraphStore::new(&commit_store_path)?);
-    let repo = Repo::new(store.clone(), commit_store, "prolly-cli".to_string());
+    let repo = open_repo(&repo_path, cache_size)?;
 
     // Determine which commit to read from
     let (commit, ref_display) = if let Some(ref_name) = from {
@@ -778,10 +751,10 @@ fn dump_cmd(
     println!("Tree root hash: {}", hex::encode(&commit.tree_root));
 
     // Load tree with pattern and seed from commit
-    let mut tree = ProllyTree::new(commit.pattern, commit.seed as u32, Some(store.clone()));
+    let mut tree = ProllyTree::new(commit.pattern, commit.seed as u32, Some(repo.block_store.clone()));
 
     // Try to load the root node. If it doesn't exist (empty tree), use a new empty tree
-    if let Some(root_node) = store.get_node(&commit.tree_root) {
+    if let Some(root_node) = repo.block_store.get_node(&commit.tree_root) {
         tree.root = root_node;
     }
 
@@ -794,7 +767,7 @@ fn dump_cmd(
 
     // Use TreeCursor to iterate with optional prefix
     let root_hash = tree.get_root_hash();
-    let mut cursor = TreeCursor::new(store.as_ref(), root_hash, prefix_bytes);
+    let mut cursor = TreeCursor::new(repo.block_store.as_ref(), root_hash, prefix_bytes);
     let mut count = 0;
 
     while let Some((key, value)) = cursor.next() {
@@ -826,13 +799,7 @@ fn diff_cmd(
     limit: Option<usize>,
     cache_size: usize,
 ) -> anyhow::Result<()> {
-    check_repo_exists(&repo_path)?;
-
-    let store_path = repo_path.join("blocks");
-    let store = Arc::new(CachedFSBlockStore::new(&store_path, cache_size)?);
-    let commit_store_path = repo_path.join("commits.db");
-    let commit_store = Arc::new(SqliteCommitGraphStore::new(&commit_store_path)?);
-    let repo = Repo::new(store.clone(), commit_store, "prolly-cli".to_string());
+    let repo = open_repo(&repo_path, cache_size)?;
 
     // Default to HEAD~ vs HEAD
     let old_ref = old.unwrap_or_else(|| "HEAD~".to_string());
@@ -869,7 +836,7 @@ fn diff_cmd(
     }
 
     // Create Differ instance
-    let mut differ = Differ::new(store.as_ref());
+    let mut differ = Differ::new(repo.block_store.as_ref());
 
     println!("\nDiff events (old -> new):");
     println!("--------------------------------------------------------------------------------");
@@ -948,13 +915,7 @@ fn print_tree_cmd(
     verbose: bool,
     cache_size: usize,
 ) -> anyhow::Result<()> {
-    check_repo_exists(&repo_path)?;
-
-    let store_path = repo_path.join("blocks");
-    let store = Arc::new(CachedFSBlockStore::new(&store_path, cache_size)?);
-    let commit_store_path = repo_path.join("commits.db");
-    let commit_store = Arc::new(SqliteCommitGraphStore::new(&commit_store_path)?);
-    let repo = Repo::new(store.clone(), commit_store, "prolly-cli".to_string());
+    let repo = open_repo(&repo_path, cache_size)?;
 
     // Default to HEAD if no ref provided
     let ref_name = from.unwrap_or_else(|| "HEAD".to_string());
@@ -978,10 +939,10 @@ fn print_tree_cmd(
     }
 
     // Create tree with pattern and seed from commit
-    let mut tree = ProllyTree::new(commit.pattern, commit.seed as u32, Some(store.clone()));
+    let mut tree = ProllyTree::new(commit.pattern, commit.seed as u32, Some(repo.block_store.clone()));
 
     // Try to load the root node
-    if let Some(root_node) = store.get_node(&commit.tree_root) {
+    if let Some(root_node) = repo.block_store.get_node(&commit.tree_root) {
         tree.root = root_node;
     } else {
         println!("\nError: Tree root not found in store");
@@ -993,7 +954,7 @@ fn print_tree_cmd(
     print_tree_recursive(
         &tree.root,
         &commit.tree_root,
-        store.as_ref(),
+        repo.block_store.as_ref(),
         &label,
         "",
         true,
