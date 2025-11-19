@@ -1,7 +1,7 @@
 mod sqlite_commit_store;
 
 use clap::{Parser, Subcommand};
-use prolly_core::{garbage_collect, BlockStore, CachedFSBlockStore, DB, Repo};
+use prolly_core::{garbage_collect, BlockStore, CachedFSBlockStore, ProllyTree, TreeCursor, DB, Repo};
 use rusqlite::Connection;
 use sqlite_commit_store::SqliteCommitGraphStore;
 use std::path::PathBuf;
@@ -100,6 +100,45 @@ enum Commands {
         /// Maximum number of commits to show
         #[arg(short, long)]
         max_count: Option<usize>,
+
+        /// Cache size for block store
+        #[arg(short, long, default_value = "10000")]
+        cache_size: usize,
+    },
+
+    /// Get a value by key
+    Get {
+        /// Key to retrieve
+        key: String,
+
+        /// Path to prolly repository
+        #[arg(short, long, default_value = ".prolly")]
+        repo: PathBuf,
+
+        /// Ref or commit to read from (default: HEAD)
+        #[arg(long)]
+        from: Option<String>,
+
+        /// Cache size for block store
+        #[arg(short, long, default_value = "10000")]
+        cache_size: usize,
+    },
+
+    /// Set a key-value pair and create a commit
+    Set {
+        /// Key to set
+        key: String,
+
+        /// Value to set
+        value: String,
+
+        /// Path to prolly repository
+        #[arg(short, long, default_value = ".prolly")]
+        repo: PathBuf,
+
+        /// Commit message (default: "Set {key} = {value}")
+        #[arg(short, long)]
+        message: Option<String>,
 
         /// Cache size for block store
         #[arg(short, long, default_value = "10000")]
@@ -428,6 +467,124 @@ fn log_cmd(
     Ok(())
 }
 
+fn get_key(
+    repo_path: PathBuf,
+    key: String,
+    from: Option<String>,
+    cache_size: usize,
+) -> anyhow::Result<()> {
+    let store_path = repo_path.join("blocks");
+    let store = Arc::new(CachedFSBlockStore::new(&store_path, cache_size)?);
+    let commit_store_path = repo_path.join("commits.db");
+    let commit_store = Arc::new(SqliteCommitGraphStore::new(&commit_store_path)?);
+    let repo = Repo::new(store.clone(), commit_store, "prolly-cli".to_string());
+
+    // Determine which commit to read from
+    let (commit, ref_display) = if let Some(ref_name) = from {
+        let commit_hash = repo.resolve_ref(&ref_name).ok_or_else(|| {
+            anyhow::anyhow!("Ref '{}' not found", ref_name)
+        })?;
+        let commit = repo.commit_graph_store.get_commit(&commit_hash).ok_or_else(|| {
+            anyhow::anyhow!("Commit not found")
+        })?;
+        (commit, ref_name)
+    } else {
+        let (head_commit, ref_name) = repo.get_head();
+        let commit = head_commit.ok_or_else(|| {
+            anyhow::anyhow!("No commits in repository")
+        })?;
+        (commit, format!("HEAD ({})", ref_name))
+    };
+
+    // Load tree with pattern and seed from commit
+    let mut tree = ProllyTree::new(commit.pattern, commit.seed as u32, Some(store.clone()));
+
+    // Try to load the root node. If it doesn't exist (empty tree), use a new empty tree
+    if let Some(root_node) = store.get_node(&commit.tree_root) {
+        tree.root = root_node;
+    }
+    // else: tree already has an empty root from ProllyTree::new()
+
+    // Search for the key using cursor
+    let key_bytes = key.as_bytes().to_vec();
+    let mut cursor = TreeCursor::new(store.as_ref(), tree.get_root_hash(), Some(&key_bytes));
+
+    if let Some((found_key, value)) = cursor.next() {
+        if found_key == key_bytes {
+            println!("================================================================================");
+            println!("GET from {}", ref_display);
+            println!("================================================================================");
+            println!("Key:   {}", key);
+            println!("Value: {}", String::from_utf8_lossy(&value));
+            println!("================================================================================");
+            return Ok(());
+        }
+    }
+
+    println!("Key '{}' not found", key);
+    Ok(())
+}
+
+fn set_key(
+    repo_path: PathBuf,
+    key: String,
+    value: String,
+    message: Option<String>,
+    cache_size: usize,
+) -> anyhow::Result<()> {
+    let store_path = repo_path.join("blocks");
+    let store = Arc::new(CachedFSBlockStore::new(&store_path, cache_size)?);
+    let commit_store_path = repo_path.join("commits.db");
+    let commit_store = Arc::new(SqliteCommitGraphStore::new(&commit_store_path)?);
+    let repo = Repo::new(store.clone(), commit_store, "prolly-cli".to_string());
+
+    // Get current HEAD
+    let (head_commit, ref_name) = repo.get_head();
+    let head_commit = head_commit.ok_or_else(|| {
+        anyhow::anyhow!("No commits in repository. Use 'prolly init' first.")
+    })?;
+
+    // Load current tree with pattern and seed from commit
+    let mut tree = ProllyTree::new(head_commit.pattern, head_commit.seed as u32, Some(store.clone()));
+
+    // Try to load the root node. If it doesn't exist (empty tree), use a new empty tree
+    if let Some(root_node) = store.get_node(&head_commit.tree_root) {
+        tree.root = root_node;
+    }
+    // else: tree already has an empty root from ProllyTree::new()
+
+    // Insert the key-value pair
+    let key_bytes = key.as_bytes().to_vec();
+    let value_bytes = value.as_bytes().to_vec();
+    tree.insert_batch(vec![(key_bytes, value_bytes)], false);
+
+    // Get new root hash
+    let new_root_hash = tree.get_root_hash();
+
+    // Create commit
+    let commit_message = message.unwrap_or_else(|| format!("Set {} = {}", key, value));
+    let commit = repo.commit(
+        &new_root_hash,
+        &commit_message,
+        None,
+        Some(head_commit.pattern),
+        Some(head_commit.seed as u32),
+    );
+    let commit_hash = commit.compute_hash();
+
+    println!("================================================================================");
+    println!("SET COMPLETE");
+    println!("================================================================================");
+    println!("Key:      {}", key);
+    println!("Value:    {}", value);
+    println!("Commit:   {}", hex::encode(&commit_hash[..8]));
+    println!("Message:  {}", commit_message);
+    println!("Branch:   {}", ref_name);
+    println!("================================================================================");
+
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
@@ -461,6 +618,19 @@ fn main() -> anyhow::Result<()> {
             max_count,
             cache_size,
         } => log_cmd(repo, start, max_count, cache_size)?,
+        Commands::Get {
+            key,
+            repo,
+            from,
+            cache_size,
+        } => get_key(repo, key, from, cache_size)?,
+        Commands::Set {
+            key,
+            value,
+            repo,
+            message,
+            cache_size,
+        } => set_key(repo, key, value, message, cache_size)?,
     }
 
     Ok(())
@@ -831,5 +1001,150 @@ mod tests {
         // Verify dry run didn't remove nodes
         let nodes_after = repo.block_store.count_nodes();
         assert_eq!(nodes_before, nodes_after);
+    }
+
+    #[test]
+    fn test_set_and_get_key() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path().join("repo");
+        std::fs::create_dir_all(&repo_path).unwrap();
+
+        let repo = create_test_repo(&repo_path);
+
+        // Set a key
+        let result = set_key(
+            repo_path.clone(),
+            "mykey".to_string(),
+            "myvalue".to_string(),
+            None,
+            100,
+        );
+        if let Err(e) = &result {
+            eprintln!("Set error: {}", e);
+        }
+        assert!(result.is_ok());
+
+        // Get the key back
+        let result = get_key(repo_path.clone(), "mykey".to_string(), None, 100);
+        assert!(result.is_ok());
+
+        // Verify a commit was created
+        let commits = repo.log(None, None);
+        assert!(commits.len() >= 2); // Initial commit + set commit
+        assert!(commits[0].1.message.contains("Set mykey = myvalue"));
+    }
+
+    #[test]
+    fn test_set_creates_commit() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path().join("repo");
+        std::fs::create_dir_all(&repo_path).unwrap();
+
+        let repo = create_test_repo(&repo_path);
+
+        let commits_before = repo.log(None, None).len();
+
+        // Set a key with custom message
+        let result = set_key(
+            repo_path.clone(),
+            "testkey".to_string(),
+            "testvalue".to_string(),
+            Some("Custom message".to_string()),
+            100,
+        );
+        assert!(result.is_ok());
+
+        // Verify a new commit was created
+        let commits_after = repo.log(None, None);
+        assert_eq!(commits_after.len(), commits_before + 1);
+        assert_eq!(commits_after[0].1.message, "Custom message");
+    }
+
+    #[test]
+    fn test_get_nonexistent_key() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path().join("repo");
+        std::fs::create_dir_all(&repo_path).unwrap();
+
+        create_test_repo(&repo_path);
+
+        // Try to get a key that doesn't exist
+        let result = get_key(repo_path, "nonexistent".to_string(), None, 100);
+        assert!(result.is_ok()); // Should succeed but print "not found"
+    }
+
+    #[test]
+    fn test_set_multiple_keys() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path().join("repo");
+        std::fs::create_dir_all(&repo_path).unwrap();
+
+        let repo = create_test_repo(&repo_path);
+
+        // Set multiple keys
+        for i in 1..=3 {
+            let result = set_key(
+                repo_path.clone(),
+                format!("key{}", i),
+                format!("value{}", i),
+                None,
+                100,
+            );
+            assert!(result.is_ok());
+        }
+
+        // Verify all commits were created
+        let commits = repo.log(None, None);
+        assert_eq!(commits.len(), 4); // Initial + 3 sets
+        assert!(commits[0].1.message.contains("Set key3 = value3"));
+        assert!(commits[1].1.message.contains("Set key2 = value2"));
+        assert!(commits[2].1.message.contains("Set key1 = value1"));
+    }
+
+    #[test]
+    fn test_get_from_different_ref() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path().join("repo");
+        std::fs::create_dir_all(&repo_path).unwrap();
+
+        let repo = create_test_repo(&repo_path);
+
+        // Set a key
+        set_key(
+            repo_path.clone(),
+            "mykey".to_string(),
+            "original".to_string(),
+            None,
+            100,
+        )
+        .unwrap();
+
+        // Create a branch
+        let commit = repo.resolve_ref("main").unwrap();
+        repo.create_branch("backup", Some(&commit)).unwrap();
+
+        // Update the key
+        set_key(
+            repo_path.clone(),
+            "mykey".to_string(),
+            "updated".to_string(),
+            None,
+            100,
+        )
+        .unwrap();
+
+        // Get from backup branch should have original value
+        // (We can't easily test the output, but we can verify it doesn't error)
+        let result = get_key(
+            repo_path.clone(),
+            "mykey".to_string(),
+            Some("backup".to_string()),
+            100,
+        );
+        assert!(result.is_ok());
+
+        // Get from HEAD should have updated value
+        let result = get_key(repo_path, "mykey".to_string(), None, 100);
+        assert!(result.is_ok());
     }
 }

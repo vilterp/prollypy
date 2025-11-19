@@ -49,7 +49,7 @@ pub struct ProllyTree {
     /// Storage backend
     store: Arc<dyn BlockStore>,
     /// Root node
-    root: Node,
+    pub root: Node,
     /// Operation statistics
     stats: BatchStats,
 }
