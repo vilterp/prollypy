@@ -111,7 +111,7 @@ impl ProllyTree {
         // Use xxHash3 for fast rolling hash (much faster than SHA256)
         // Combine current hash with data by using current_hash as seed
         let hash64 = xxh3_64_with_seed(data, current_hash as u64);
-        (hash64 as u32) // Take lower 32 bits
+        hash64 as u32 // Take lower 32 bits
     }
 
     /// Compute content hash for a node.
