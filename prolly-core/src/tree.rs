@@ -227,19 +227,15 @@ impl ProllyTree {
 
         if node.is_leaf {
             // Leaf node: merge old data with mutations
-            let old_items: Vec<_> = node
-                .keys
-                .iter()
-                .zip(node.values.iter())
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
-            let merged = self.merge_sorted(&old_items, mutations);
+            // Avoid cloning by building vec of references, then only clone what we need
+            let merged = self.merge_sorted_from_node(&node, mutations);
 
             // Build new leaf nodes (may split if too large)
             let new_leaves = self.build_leaves(&merged);
 
             if new_leaves.len() == 1 {
-                return new_leaves[0].clone();
+                // Move out of Vec instead of cloning
+                return new_leaves.into_iter().next().unwrap();
             } else {
                 // Multiple leaves - need parent (may recursively split if too many)
                 return self.build_internal_from_children(new_leaves);
@@ -250,8 +246,8 @@ impl ProllyTree {
             let mut mut_idx = 0;
 
             for (i, child_hash) in node.values.iter().enumerate() {
-                // Find mutations for this child
-                let mut child_mutations = Vec::new();
+                // Find mutations for this child by tracking start and end indices
+                let start_idx = mut_idx;
 
                 while mut_idx < mutations.len() {
                     let key = &mutations[mut_idx].0;
@@ -269,24 +265,26 @@ impl ProllyTree {
                     };
 
                     if belongs_here {
-                        child_mutations.push(mutations[mut_idx].clone());
                         mut_idx += 1;
                     } else {
                         break;
                     }
                 }
 
+                // Pass slice of mutations instead of cloning
+                let child_mutations = &mutations[start_idx..mut_idx];
+
                 // Rebuild child (or reuse if no mutations)
                 if let Some(child_node) = self.store.get_node(child_hash) {
-                    let new_child = self.rebuild_with_mutations(child_node, &child_mutations);
+                    let new_child = self.rebuild_with_mutations(child_node, child_mutations);
                     new_children.push(new_child);
                 }
             }
 
             // Now rebuild internal structure from new children
             if new_children.len() == 1 {
-                // Single child - unwrap it
-                return new_children[0].clone();
+                // Single child - move it out instead of cloning
+                return new_children.into_iter().next().unwrap();
             } else {
                 // Build new internal node(s) from children
                 return self.build_internal_from_children(new_children);
@@ -398,33 +396,43 @@ impl ProllyTree {
         self.build_internal_from_children(internal_nodes)
     }
 
-    /// Merge two sorted lists of (key, value) tuples
-    fn merge_sorted(
+    /// Merge node's keys/values with mutations without initial cloning
+    fn merge_sorted_from_node(
         &self,
-        old_items: &[(Vec<u8>, Vec<u8>)],
-        new_items: &[(Vec<u8>, Vec<u8>)],
+        node: &Node,
+        mutations: &[(Vec<u8>, Vec<u8>)],
     ) -> Vec<(Vec<u8>, Vec<u8>)> {
-        let mut result = Vec::new();
+        let mut result = Vec::with_capacity(node.keys.len() + mutations.len());
         let mut i = 0;
         let mut j = 0;
 
-        while i < old_items.len() && j < new_items.len() {
-            if old_items[i].0 < new_items[j].0 {
-                result.push(old_items[i].clone());
+        while i < node.keys.len() && j < mutations.len() {
+            if node.keys[i].as_slice() < mutations[j].0.as_slice() {
+                result.push((node.keys[i].clone(), node.values[i].clone()));
                 i += 1;
-            } else if old_items[i].0 == new_items[j].0 {
+            } else if node.keys[i].as_slice() == mutations[j].0.as_slice() {
                 // New value overwrites old
-                result.push(new_items[j].clone());
+                result.push(mutations[j].clone());
                 i += 1;
                 j += 1;
             } else {
-                result.push(new_items[j].clone());
+                result.push(mutations[j].clone());
                 j += 1;
             }
         }
 
-        result.extend_from_slice(&old_items[i..]);
-        result.extend_from_slice(&new_items[j..]);
+        // Append remaining old items
+        while i < node.keys.len() {
+            result.push((node.keys[i].clone(), node.values[i].clone()));
+            i += 1;
+        }
+
+        // Append remaining mutations
+        while j < mutations.len() {
+            result.push(mutations[j].clone());
+            j += 1;
+        }
+
         result
     }
 
