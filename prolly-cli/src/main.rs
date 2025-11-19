@@ -54,6 +54,57 @@ enum Commands {
         #[arg(short, long, default_value = "10000")]
         cache_size: usize,
     },
+
+    /// List or create branches
+    Branch {
+        /// Path to prolly repository
+        #[arg(short, long)]
+        repo: PathBuf,
+
+        /// Branch name to create (if not provided, lists all branches)
+        name: Option<String>,
+
+        /// Create branch from this commit (default: HEAD)
+        #[arg(short, long)]
+        from: Option<String>,
+
+        /// Cache size for block store
+        #[arg(short, long, default_value = "10000")]
+        cache_size: usize,
+    },
+
+    /// Switch to a different branch
+    Checkout {
+        /// Path to prolly repository
+        #[arg(short, long)]
+        repo: PathBuf,
+
+        /// Branch name to checkout
+        branch: String,
+
+        /// Cache size for block store
+        #[arg(short, long, default_value = "10000")]
+        cache_size: usize,
+    },
+
+    /// Show commit history
+    Log {
+        /// Path to prolly repository
+        #[arg(short, long)]
+        repo: PathBuf,
+
+        /// Start from this ref (default: HEAD)
+        #[arg(short, long)]
+        start: Option<String>,
+
+        /// Maximum number of commits to show
+        #[arg(short = 'n', long)]
+        max_count: Option<usize>,
+
+        /// Cache size for block store
+        #[arg(short, long, default_value = "10000")]
+        cache_size: usize,
+    },
 }
 
 fn import_sqlite(
@@ -328,6 +379,115 @@ fn gc_repo(repo_path: PathBuf, dry_run: bool, cache_size: usize) -> anyhow::Resu
     Ok(())
 }
 
+fn branch_cmd(
+    repo_path: PathBuf,
+    name: Option<String>,
+    from: Option<String>,
+    cache_size: usize,
+) -> anyhow::Result<()> {
+    let store_path = repo_path.join("blocks");
+    let store = Arc::new(CachedFSBlockStore::new(&store_path, cache_size)?);
+    let commit_store = Arc::new(MemoryCommitGraphStore::new());
+
+    // TODO: Load commit graph from filesystem
+    let repo = Repo::new(store, commit_store, "prolly-cli".to_string());
+
+    if let Some(branch_name) = name {
+        // Create a new branch
+        let from_commit = if let Some(from_ref) = from {
+            Some(repo.resolve_ref(&from_ref).ok_or_else(|| {
+                anyhow::anyhow!("Could not resolve ref: {}", from_ref)
+            })?)
+        } else {
+            None
+        };
+
+        repo.create_branch(&branch_name, from_commit.as_ref())
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        println!("Created branch: {}", branch_name);
+    } else {
+        // List all branches
+        let (head_commit, head_ref) = repo.get_head();
+        let branches = repo.list_branches();
+
+        if branches.is_empty() {
+            println!("No branches found");
+        } else {
+            for (name, hash) in branches {
+                let marker = if name == head_ref { "* " } else { "  " };
+                println!("{}{} ({})", marker, name, hex::encode(&hash[..8]));
+            }
+
+            if let Some(commit) = head_commit {
+                println!();
+                println!("HEAD -> {}", head_ref);
+                println!("Commit: {}", commit.message);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn checkout_cmd(repo_path: PathBuf, branch: String, cache_size: usize) -> anyhow::Result<()> {
+    let store_path = repo_path.join("blocks");
+    let store = Arc::new(CachedFSBlockStore::new(&store_path, cache_size)?);
+    let commit_store = Arc::new(MemoryCommitGraphStore::new());
+
+    // TODO: Load commit graph from filesystem
+    let repo = Repo::new(store, commit_store, "prolly-cli".to_string());
+
+    repo.checkout(&branch)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    println!("Switched to branch: {}", branch);
+
+    // Show commit info
+    let (commit, _) = repo.get_head();
+    if let Some(commit) = commit {
+        println!("Commit: {}", hex::encode(&commit.compute_hash()[..8]));
+        println!("Message: {}", commit.message);
+    }
+
+    Ok(())
+}
+
+fn log_cmd(
+    repo_path: PathBuf,
+    start: Option<String>,
+    max_count: Option<usize>,
+    cache_size: usize,
+) -> anyhow::Result<()> {
+    let store_path = repo_path.join("blocks");
+    let store = Arc::new(CachedFSBlockStore::new(&store_path, cache_size)?);
+    let commit_store = Arc::new(MemoryCommitGraphStore::new());
+
+    // TODO: Load commit graph from filesystem
+    let repo = Repo::new(store, commit_store, "prolly-cli".to_string());
+
+    let commits = repo.log(start.as_deref(), max_count);
+
+    if commits.is_empty() {
+        println!("No commits found");
+        return Ok(());
+    }
+
+    for (hash, commit) in commits {
+        println!("commit {}", hex::encode(&hash));
+        println!("Author: {}", commit.author);
+        println!(
+            "Date:   {}",
+            chrono::DateTime::from_timestamp(commit.timestamp as i64, 0)
+                .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+                .unwrap_or_else(|| commit.timestamp.to_string())
+        );
+        println!();
+        println!("    {}", commit.message);
+        println!();
+    }
+
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
@@ -344,6 +504,23 @@ fn main() -> anyhow::Result<()> {
             dry_run,
             cache_size,
         } => gc_repo(repo, dry_run, cache_size)?,
+        Commands::Branch {
+            repo,
+            name,
+            from,
+            cache_size,
+        } => branch_cmd(repo, name, from, cache_size)?,
+        Commands::Checkout {
+            repo,
+            branch,
+            cache_size,
+        } => checkout_cmd(repo, branch, cache_size)?,
+        Commands::Log {
+            repo,
+            start,
+            max_count,
+            cache_size,
+        } => log_cmd(repo, start, max_count, cache_size)?,
     }
 
     Ok(())
