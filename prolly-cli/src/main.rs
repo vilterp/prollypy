@@ -1,8 +1,5 @@
 use clap::{Parser, Subcommand};
-use prolly_core::{
-    garbage_collect, CachedFSBlockStore, Commit, CommitGraphStore, DB, MemoryCommitGraphStore,
-    Repo,
-};
+use prolly_core::{garbage_collect, CachedFSBlockStore, DB, Repo, SqliteCommitGraphStore};
 use rusqlite::Connection;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -24,7 +21,7 @@ enum Commands {
         sqlite_path: PathBuf,
 
         /// Path to prolly repository (will be created)
-        #[arg(short, long)]
+        #[arg(short, long, default_value = ".prolly")]
         repo: PathBuf,
 
         /// Batch size for inserts (0 = single batch)
@@ -43,7 +40,7 @@ enum Commands {
     /// Garbage collect unreachable nodes
     Gc {
         /// Path to prolly repository
-        #[arg(short, long)]
+        #[arg(short, long, default_value = ".prolly")]
         repo: PathBuf,
 
         /// Dry run - don't actually remove nodes, just report statistics
@@ -58,7 +55,7 @@ enum Commands {
     /// List or create branches
     Branch {
         /// Path to prolly repository
-        #[arg(short, long)]
+        #[arg(short, long, default_value = ".prolly")]
         repo: PathBuf,
 
         /// Branch name to create (if not provided, lists all branches)
@@ -76,7 +73,7 @@ enum Commands {
     /// Switch to a different branch
     Checkout {
         /// Path to prolly repository
-        #[arg(short, long)]
+        #[arg(short, long, default_value = ".prolly")]
         repo: PathBuf,
 
         /// Branch name to checkout
@@ -90,7 +87,7 @@ enum Commands {
     /// Show commit history
     Log {
         /// Path to prolly repository
-        #[arg(short, long)]
+        #[arg(short, long, default_value = ".prolly")]
         repo: PathBuf,
 
         /// Start from this ref (default: HEAD)
@@ -304,24 +301,23 @@ fn import_sqlite(
     // Create commit
     println!();
     println!("Creating commit...");
-    let commit_store = MemoryCommitGraphStore::new();
-    let tree_root = db.get_root_hash();
+    let commit_store_path = repo_path.join("commits.db");
+    let commit_store = Arc::new(
+        SqliteCommitGraphStore::new(&commit_store_path)
+            .map_err(|e| anyhow::anyhow!("Failed to create commit store: {}", e))?,
+    );
+    let repo = Repo::new(store.clone(), commit_store.clone(), "prolly-cli".to_string());
 
-    let commit = Commit::new(
-        tree_root,
-        vec![],
-        format!("Import from {}", sqlite_path.display()),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs_f64(),
-        "prolly-cli".to_string(),
+    let tree_root = db.get_root_hash();
+    let commit = repo.commit(
+        &tree_root,
+        &format!("Import from {}", sqlite_path.display()),
+        None,
+        None,
+        None,
     );
 
     let commit_hash = commit.compute_hash();
-    commit_store.put_commit(&commit_hash, commit);
-    commit_store.set_ref("main", &commit_hash);
-    commit_store.set_head("main");
-
     println!("Commit: {}", hex::encode(&commit_hash[..8]));
     println!("Branch: main");
 
@@ -335,10 +331,11 @@ fn gc_repo(repo_path: PathBuf, dry_run: bool, cache_size: usize) -> anyhow::Resu
     // Open the repository
     let store_path = repo_path.join("blocks");
     let store = Arc::new(CachedFSBlockStore::new(&store_path, cache_size)?);
-    let commit_store = Arc::new(MemoryCommitGraphStore::new());
-
-    // TODO: Load commit graph from filesystem instead of using empty memory store
-    // For now, we'll demonstrate with an empty repo
+    let commit_store_path = repo_path.join("commits.db");
+    let commit_store = Arc::new(
+        SqliteCommitGraphStore::new(&commit_store_path)
+            .map_err(|e| anyhow::anyhow!("Failed to open commit store: {}", e))?,
+    );
     let repo = Repo::new(store.clone(), commit_store, "prolly-cli".to_string());
 
     println!();
@@ -387,9 +384,11 @@ fn branch_cmd(
 ) -> anyhow::Result<()> {
     let store_path = repo_path.join("blocks");
     let store = Arc::new(CachedFSBlockStore::new(&store_path, cache_size)?);
-    let commit_store = Arc::new(MemoryCommitGraphStore::new());
-
-    // TODO: Load commit graph from filesystem
+    let commit_store_path = repo_path.join("commits.db");
+    let commit_store = Arc::new(
+        SqliteCommitGraphStore::new(&commit_store_path)
+            .map_err(|e| anyhow::anyhow!("Failed to open commit store: {}", e))?,
+    );
     let repo = Repo::new(store, commit_store, "prolly-cli".to_string());
 
     if let Some(branch_name) = name {
@@ -432,9 +431,11 @@ fn branch_cmd(
 fn checkout_cmd(repo_path: PathBuf, branch: String, cache_size: usize) -> anyhow::Result<()> {
     let store_path = repo_path.join("blocks");
     let store = Arc::new(CachedFSBlockStore::new(&store_path, cache_size)?);
-    let commit_store = Arc::new(MemoryCommitGraphStore::new());
-
-    // TODO: Load commit graph from filesystem
+    let commit_store_path = repo_path.join("commits.db");
+    let commit_store = Arc::new(
+        SqliteCommitGraphStore::new(&commit_store_path)
+            .map_err(|e| anyhow::anyhow!("Failed to open commit store: {}", e))?,
+    );
     let repo = Repo::new(store, commit_store, "prolly-cli".to_string());
 
     repo.checkout(&branch)
@@ -459,9 +460,11 @@ fn log_cmd(
 ) -> anyhow::Result<()> {
     let store_path = repo_path.join("blocks");
     let store = Arc::new(CachedFSBlockStore::new(&store_path, cache_size)?);
-    let commit_store = Arc::new(MemoryCommitGraphStore::new());
-
-    // TODO: Load commit graph from filesystem
+    let commit_store_path = repo_path.join("commits.db");
+    let commit_store = Arc::new(
+        SqliteCommitGraphStore::new(&commit_store_path)
+            .map_err(|e| anyhow::anyhow!("Failed to open commit store: {}", e))?,
+    );
     let repo = Repo::new(store, commit_store, "prolly-cli".to_string());
 
     let commits = repo.log(start.as_deref(), max_count);
