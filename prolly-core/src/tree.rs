@@ -9,6 +9,7 @@
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::Instant;
+use xxhash_rust::xxh3::xxh3_64_with_seed;
 
 use crate::cursor::TreeCursor;
 use crate::node::Node;
@@ -95,7 +96,7 @@ impl ProllyTree {
         &self.stats
     }
 
-    /// Deterministic rolling hash using SHA256.
+    /// Deterministic rolling hash using xxHash (much faster than SHA256).
     ///
     /// # Arguments
     ///
@@ -107,12 +108,10 @@ impl ProllyTree {
     /// Updated hash value (u32)
     #[inline]
     fn rolling_hash(&self, current_hash: u32, data: &[u8]) -> u32 {
-        // Optimized: use single-shot digest with chained updates
-        let mut hasher = Sha256::new();
-        hasher.update(current_hash.to_be_bytes());
-        hasher.update(data);
-        let hash_bytes = hasher.finalize();
-        u32::from_be_bytes([hash_bytes[0], hash_bytes[1], hash_bytes[2], hash_bytes[3]])
+        // Use xxHash3 for fast rolling hash (much faster than SHA256)
+        // Combine current hash with data by using current_hash as seed
+        let hash64 = xxh3_64_with_seed(data, current_hash as u64);
+        (hash64 as u32) // Take lower 32 bits
     }
 
     /// Compute content hash for a node.
