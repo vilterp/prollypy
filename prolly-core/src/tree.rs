@@ -105,9 +105,11 @@ impl ProllyTree {
     /// # Returns
     ///
     /// Updated hash value (u32)
+    #[inline]
     fn rolling_hash(&self, current_hash: u32, data: &[u8]) -> u32 {
+        // Optimized: use single-shot digest with chained updates
         let mut hasher = Sha256::new();
-        hasher.update(&current_hash.to_be_bytes());
+        hasher.update(current_hash.to_be_bytes());
         hasher.update(data);
         let hash_bytes = hasher.finalize();
         u32::from_be_bytes([hash_bytes[0], hash_bytes[1], hash_bytes[2], hash_bytes[3]])
@@ -438,8 +440,8 @@ impl ProllyTree {
         let mut roll_hash = self.seed;
 
         for (i, (key, value)) in items.iter().enumerate() {
-            current_keys.push(key.clone());
-            current_values.push(value.clone());
+            current_keys.push(key.to_vec());
+            current_values.push(value.to_vec());
 
             // Update rolling hash with the key and value bytes
             roll_hash = self.rolling_hash(roll_hash, key);
@@ -480,14 +482,24 @@ impl ProllyTree {
         &self.store
     }
 
-    /// Iterate through all items in the tree
-    pub fn items(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
+    /// Iterate through all items in the tree with optional prefix filter
+    ///
+    /// # Arguments
+    ///
+    /// * `prefix` - Optional prefix to filter keys. If provided, only returns keys starting with this prefix.
+    pub fn items(&self, prefix: Option<&[u8]>) -> Vec<(Vec<u8>, Vec<u8>)> {
         let root_hash = self.get_root_hash();
-        let mut cursor = TreeCursor::new(self.store.as_ref(), root_hash, None);
+        let mut cursor = TreeCursor::new(self.store.as_ref(), root_hash, prefix);
         let mut result = Vec::new();
 
-        while let Some(entry) = cursor.next() {
-            result.push(entry);
+        while let Some((key, value)) = cursor.next() {
+            // If we have a prefix, check if we've moved past it
+            if let Some(prefix_bytes) = prefix {
+                if !key.starts_with(prefix_bytes) {
+                    break;
+                }
+            }
+            result.push((key, value));
         }
 
         result
@@ -495,7 +507,7 @@ impl ProllyTree {
 
     /// Count total number of items in the tree
     pub fn count(&self) -> usize {
-        self.items().len()
+        self.items(None).len()
     }
 }
 
@@ -528,7 +540,7 @@ mod tests {
         tree.insert_batch(mutations, false);
         assert_eq!(tree.count(), 3);
 
-        let items = tree.items();
+        let items = tree.items(None);
         assert_eq!(items[0], (b"a".to_vec(), b"val_a".to_vec()));
         assert_eq!(items[1], (b"b".to_vec(), b"val_b".to_vec()));
         assert_eq!(items[2], (b"c".to_vec(), b"val_c".to_vec()));
@@ -540,12 +552,12 @@ mod tests {
 
         // Insert initial value
         tree.insert_batch(vec![(b"key".to_vec(), b"value1".to_vec())], false);
-        assert_eq!(tree.items()[0].1, b"value1");
+        assert_eq!(tree.items(None)[0].1, b"value1");
 
         // Update value
         tree.insert_batch(vec![(b"key".to_vec(), b"value2".to_vec())], false);
         assert_eq!(tree.count(), 1);
-        assert_eq!(tree.items()[0].1, b"value2");
+        assert_eq!(tree.items(None)[0].1, b"value2");
     }
 
     #[test]
@@ -564,7 +576,7 @@ mod tests {
         assert_eq!(tree.count(), 1000);
 
         // Verify items are sorted
-        let items = tree.items();
+        let items = tree.items(None);
         for (i, (key, _)) in items.iter().enumerate() {
             let expected_key = format!("key{:04}", i).into_bytes();
             assert_eq!(key, &expected_key);

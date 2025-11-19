@@ -363,66 +363,55 @@ fn import_sqlite(
             continue;
         }
 
-        // Import data in batches
+        // Import data in batches - stream rows instead of loading all into memory
         let column_list = columns.join(", ");
         let query = format!("SELECT {} FROM {}", column_list, table_name);
 
         let mut stmt = sqlite_conn.prepare(&query)?;
-
-        // Fetch all rows (rusqlite doesn't support streaming easily)
-        let rows: Vec<Vec<serde_json::Value>> = stmt
-            .query_map([], |row| {
-                let mut values = Vec::new();
-                for i in 0..columns.len() {
-                    let value: serde_json::Value = match row.get::<_, rusqlite::types::Value>(i)? {
-                        rusqlite::types::Value::Null => serde_json::Value::Null,
-                        rusqlite::types::Value::Integer(i) => serde_json::Value::from(i),
-                        rusqlite::types::Value::Real(f) => serde_json::Value::from(f),
-                        rusqlite::types::Value::Text(s) => serde_json::Value::String(s),
-                        rusqlite::types::Value::Blob(b) => {
-                            serde_json::Value::String(String::from_utf8_lossy(&b).to_string())
-                        }
-                    };
-                    values.push(value);
-                }
-                Ok(values)
-            })?
-            .collect::<Result<_, rusqlite::Error>>()?;
+        let mut rows_query = stmt.query([])?;
 
         let table_start = Instant::now();
+        let mut row_buffer = Vec::new();
+        let effective_batch_size = if batch_size == 0 { row_count as usize } else { batch_size };
 
-        if batch_size > 0 && rows.len() > batch_size {
-            // Insert in batches
-            for (i, chunk) in rows.chunks(batch_size).enumerate() {
-                let batch_start = Instant::now();
-                db.insert_rows(table_name, chunk.to_vec(), verbose);
-                let batch_elapsed = batch_start.elapsed();
-                let rows_per_sec = chunk.len() as f64 / batch_elapsed.as_secs_f64();
-
-                if verbose {
-                    println!(
-                        "Batch {}: {} rows in {:.2}s ({:.0} rows/sec)",
-                        i + 1,
-                        chunk.len(),
-                        batch_elapsed.as_secs_f64(),
-                        rows_per_sec
-                    );
-                }
-
-                total_rows += chunk.len();
+        while let Some(row) = rows_query.next()? {
+            let mut values = Vec::new();
+            for i in 0..columns.len() {
+                let value: serde_json::Value = match row.get::<_, rusqlite::types::Value>(i)? {
+                    rusqlite::types::Value::Null => serde_json::Value::Null,
+                    rusqlite::types::Value::Integer(i) => serde_json::Value::from(i),
+                    rusqlite::types::Value::Real(f) => serde_json::Value::from(f),
+                    rusqlite::types::Value::Text(s) => serde_json::Value::String(s),
+                    rusqlite::types::Value::Blob(b) => {
+                        serde_json::Value::String(String::from_utf8_lossy(&b).to_string())
+                    }
+                };
+                values.push(value);
             }
-        } else {
-            // Single batch
-            db.insert_rows(table_name, rows.clone(), verbose);
-            total_rows += rows.len();
+            row_buffer.push(values);
+
+            // Insert batch when full
+            if row_buffer.len() >= effective_batch_size {
+                let batch_len = row_buffer.len();
+                db.insert_rows(table_name, row_buffer, verbose);
+                total_rows += batch_len;
+                row_buffer = Vec::new();
+            }
+        }
+
+        // Insert remaining rows
+        if !row_buffer.is_empty() {
+            let batch_len = row_buffer.len();
+            db.insert_rows(table_name, row_buffer, verbose);
+            total_rows += batch_len;
         }
 
         let table_elapsed = table_start.elapsed();
-        let rows_per_sec = rows.len() as f64 / table_elapsed.as_secs_f64();
+        let rows_per_sec = total_rows as f64 / table_elapsed.as_secs_f64();
 
         println!(
             "Imported {} rows in {:.2}s ({:.0} rows/sec)",
-            rows.len(),
+            total_rows,
             table_elapsed.as_secs_f64(),
             rows_per_sec
         );

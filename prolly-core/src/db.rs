@@ -99,7 +99,7 @@ impl DB {
     /// Table instance or None if not found
     pub fn get_table(&self, name: &str) -> Option<Table> {
         let schema_key = format!("/s/{}", name).into_bytes();
-        let items = self.tree.items();
+        let items = self.tree.items(Some(&schema_key));
 
         for (key, value) in items {
             if key == schema_key {
@@ -116,7 +116,7 @@ impl DB {
     /// List of table names
     pub fn list_tables(&self) -> Vec<String> {
         let prefix = b"/s/";
-        let items = self.tree.items();
+        let items = self.tree.items(Some(prefix));
         let mut tables = Vec::new();
 
         for (key, _) in items {
