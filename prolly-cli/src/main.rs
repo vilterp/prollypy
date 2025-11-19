@@ -1489,14 +1489,15 @@ mod tests {
     }
 
     #[test]
-    fn test_check_repo_exists() {
+    fn test_open_repo_nonexistent() {
         let temp_dir = TempDir::new().unwrap();
         let repo_path = temp_dir.path().join("nonexistent");
 
         // Should fail for nonexistent repo
-        let result = check_repo_exists(&repo_path);
+        let result = open_repo(&repo_path, 100);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Run 'prolly init'"));
+        let err_msg = format!("{}", result.err().unwrap());
+        assert!(err_msg.contains("Run 'prolly init'"));
     }
 
     #[test]
