@@ -371,39 +371,63 @@ fn import_sqlite(
         let mut rows_query = stmt.query([])?;
 
         let table_start = Instant::now();
-        let mut row_buffer = Vec::new();
-        let effective_batch_size = if batch_size == 0 { row_count as usize } else { batch_size };
 
-        while let Some(row) = rows_query.next()? {
-            let mut values = Vec::new();
-            for i in 0..columns.len() {
-                let value: serde_json::Value = match row.get::<_, rusqlite::types::Value>(i)? {
-                    rusqlite::types::Value::Null => serde_json::Value::Null,
-                    rusqlite::types::Value::Integer(i) => serde_json::Value::from(i),
-                    rusqlite::types::Value::Real(f) => serde_json::Value::from(f),
-                    rusqlite::types::Value::Text(s) => serde_json::Value::String(s),
-                    rusqlite::types::Value::Blob(b) => {
-                        serde_json::Value::String(String::from_utf8_lossy(&b).to_string())
-                    }
-                };
-                values.push(value);
+        if batch_size == 0 {
+            // Single batch mode: collect all rows and insert once for optimal tree structure
+            let mut all_rows = Vec::new();
+            while let Some(row) = rows_query.next()? {
+                let mut values = Vec::new();
+                for i in 0..columns.len() {
+                    let value: serde_json::Value = match row.get::<_, rusqlite::types::Value>(i)? {
+                        rusqlite::types::Value::Null => serde_json::Value::Null,
+                        rusqlite::types::Value::Integer(i) => serde_json::Value::from(i),
+                        rusqlite::types::Value::Real(f) => serde_json::Value::from(f),
+                        rusqlite::types::Value::Text(s) => serde_json::Value::String(s),
+                        rusqlite::types::Value::Blob(b) => {
+                            serde_json::Value::String(String::from_utf8_lossy(&b).to_string())
+                        }
+                    };
+                    values.push(value);
+                }
+                all_rows.push(values);
             }
-            row_buffer.push(values);
 
-            // Insert batch when full
-            if row_buffer.len() >= effective_batch_size {
+            total_rows += all_rows.len();
+            db.insert_rows(table_name, all_rows, verbose);
+        } else {
+            // Batched mode: insert in chunks for memory efficiency
+            let mut row_buffer = Vec::new();
+            while let Some(row) = rows_query.next()? {
+                let mut values = Vec::new();
+                for i in 0..columns.len() {
+                    let value: serde_json::Value = match row.get::<_, rusqlite::types::Value>(i)? {
+                        rusqlite::types::Value::Null => serde_json::Value::Null,
+                        rusqlite::types::Value::Integer(i) => serde_json::Value::from(i),
+                        rusqlite::types::Value::Real(f) => serde_json::Value::from(f),
+                        rusqlite::types::Value::Text(s) => serde_json::Value::String(s),
+                        rusqlite::types::Value::Blob(b) => {
+                            serde_json::Value::String(String::from_utf8_lossy(&b).to_string())
+                        }
+                    };
+                    values.push(value);
+                }
+                row_buffer.push(values);
+
+                // Insert batch when full
+                if row_buffer.len() >= batch_size {
+                    let batch_len = row_buffer.len();
+                    db.insert_rows(table_name, row_buffer, verbose);
+                    total_rows += batch_len;
+                    row_buffer = Vec::new();
+                }
+            }
+
+            // Insert remaining rows
+            if !row_buffer.is_empty() {
                 let batch_len = row_buffer.len();
                 db.insert_rows(table_name, row_buffer, verbose);
                 total_rows += batch_len;
-                row_buffer = Vec::new();
             }
-        }
-
-        // Insert remaining rows
-        if !row_buffer.is_empty() {
-            let batch_len = row_buffer.len();
-            db.insert_rows(table_name, row_buffer, verbose);
-            total_rows += batch_len;
         }
 
         let table_elapsed = table_start.elapsed();
