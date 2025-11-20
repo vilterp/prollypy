@@ -3,6 +3,8 @@
 //! Provides a cursor abstraction that traverses trees in sorted key order,
 //! independent of tree structure.
 
+use std::sync::Arc;
+
 use crate::node::Node;
 use crate::store::BlockStore;
 use crate::Hash;
@@ -16,7 +18,8 @@ pub struct TreeCursor<'a> {
     store: &'a dyn BlockStore,
     /// Stack of (node, index) tuples representing current position
     /// index points to next unvisited child/entry
-    stack: Vec<(Node, usize)>,
+    /// Uses Arc<Node> to avoid cloning nodes during traversal
+    stack: Vec<(Arc<Node>, usize)>,
     /// Current key-value pair (None until first next() call)
     current: Option<(Vec<u8>, Vec<u8>)>,
 }
@@ -78,19 +81,22 @@ impl<'a> TreeCursor<'a> {
                 }
             }
 
-            // Push this node with the child index
-            self.stack.push((node.clone(), child_idx));
-
             // Descend into the chosen child
-            if child_idx < node.values.len() {
-                let child_hash = &node.values[child_idx];
-                node = match self.store.get_node(child_hash) {
-                    Some(n) => n,
-                    None => return,
-                };
+            let child_hash = if child_idx < node.values.len() {
+                node.values[child_idx].clone()
             } else {
+                // Push this node and return
+                self.stack.push((node, child_idx));
                 return;
-            }
+            };
+
+            // Push this node with the child index
+            self.stack.push((node, child_idx));
+
+            node = match self.store.get_node(&child_hash) {
+                Some(n) => n,
+                None => return,
+            };
         }
 
         // At a leaf node: find first key >= target
@@ -159,8 +165,11 @@ impl<'a> TreeCursor<'a> {
             return None;
         }
 
-        // Get current node and index
-        let (node, idx) = self.stack.last()?.clone();
+        // Get current node and index (Arc clone is cheap)
+        let (node, idx) = {
+            let (n, i) = self.stack.last()?;
+            (Arc::clone(n), *i)
+        };
 
         if node.is_leaf {
             // At a leaf: return current entry and advance
@@ -204,7 +213,11 @@ impl<'a> TreeCursor<'a> {
     /// After exhausting a leaf, move to the next leaf.
     fn advance_to_next_leaf(&mut self) {
         while !self.stack.is_empty() {
-            let (node, idx) = self.stack.last().cloned().unwrap();
+            // Arc clone is cheap
+            let (node, idx) = {
+                let (n, i) = self.stack.last().unwrap();
+                (Arc::clone(n), *i)
+            };
 
             if !node.is_leaf {
                 // Internal node: we just finished child at idx, try next child at idx+1

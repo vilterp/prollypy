@@ -640,7 +640,7 @@ fn get_key(
 
     // Try to load the root node. If it doesn't exist (empty tree), use a new empty tree
     if let Some(root_node) = repo.block_store.get_node(&commit.tree_root) {
-        tree.root = root_node;
+        tree.root = (*root_node).clone();
     }
     // else: tree already has an empty root from ProllyTree::new()
 
@@ -684,7 +684,7 @@ fn set_key(
 
     // Try to load the root node. If it doesn't exist (empty tree), use a new empty tree
     if let Some(root_node) = repo.block_store.get_node(&head_commit.tree_root) {
-        tree.root = root_node;
+        tree.root = (*root_node).clone();
     }
     // else: tree already has an empty root from ProllyTree::new()
 
@@ -755,7 +755,7 @@ fn dump_cmd(
 
     // Try to load the root node. If it doesn't exist (empty tree), use a new empty tree
     if let Some(root_node) = repo.block_store.get_node(&commit.tree_root) {
-        tree.root = root_node;
+        tree.root = (*root_node).clone();
     }
 
     // Get prefix bytes if provided
@@ -943,7 +943,7 @@ fn print_tree_cmd(
 
     // Try to load the root node
     if let Some(root_node) = repo.block_store.get_node(&commit.tree_root) {
-        tree.root = root_node;
+        tree.root = (*root_node).clone();
     } else {
         println!("\nError: Tree root not found in store");
         return Ok(());
