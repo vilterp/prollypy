@@ -104,24 +104,21 @@ impl<'a> Differ<'a> {
         let mut old_cursor = TreeCursor::new(self.store, old_hash.clone(), prefix);
         let mut new_cursor = TreeCursor::new(self.store, new_hash.clone(), prefix);
 
-        // Get first entries
-        let mut old_entry = old_cursor.next();
-        let mut new_entry = new_cursor.next();
-
         // Track if we've found any matches (for early termination with prefix)
         let mut found_match = false;
 
-        // Merge-like traversal of both trees
-        while old_entry.is_some() || new_entry.is_some() {
+        // Merge-like traversal of both trees using peek() to avoid cloning
+        loop {
+            let old_peek = old_cursor.peek();
+            let new_peek = new_cursor.peek();
+
             // Early termination: if we have a prefix and both entries don't match,
             // and we've already found matches, we're past the prefix range
             if prefix.is_some() {
-                let old_matches = old_entry
-                    .as_ref()
+                let old_matches = old_peek
                     .map(|(k, _)| self.matches_prefix(k))
                     .unwrap_or(false);
-                let new_matches = new_entry
-                    .as_ref()
+                let new_matches = new_peek
                     .map(|(k, _)| self.matches_prefix(k))
                     .unwrap_or(false);
 
@@ -132,51 +129,49 @@ impl<'a> Differ<'a> {
             }
 
             // Check for subtree skipping opportunity
-            if old_entry.is_some() && new_entry.is_some() {
+            if old_peek.is_some() && new_peek.is_some() {
                 let old_next_hash = old_cursor.peek_next_hash();
                 let new_next_hash = new_cursor.peek_next_hash();
 
-                if let (Some(old_hash), Some(new_hash)) = (&old_next_hash, &new_next_hash) {
-                    if old_hash == new_hash {
+                if let (Some(ref old_h), Some(ref new_h)) = (&old_next_hash, &new_next_hash) {
+                    if old_h == new_h {
                         // Same subtree coming up - skip it!
                         self.stats.subtrees_skipped += 1;
-                        old_cursor.skip_subtree(old_hash);
-                        new_cursor.skip_subtree(new_hash);
-                        old_entry = old_cursor.next();
-                        new_entry = new_cursor.next();
+                        old_cursor.skip_subtree(old_h);
+                        new_cursor.skip_subtree(new_h);
                         continue;
                     }
                 }
             }
 
-            match (&old_entry, &new_entry) {
+            match (old_peek, new_peek) {
                 (None, Some((new_key, new_value))) => {
                     // Only new entries remain - all additions
                     if self.matches_prefix(new_key) {
                         found_match = true;
                         events.push(DiffEvent::Added(Added {
-                            key: new_key.clone(),
-                            value: new_value.clone(),
+                            key: new_key.to_vec(),
+                            value: new_value.to_vec(),
                         }));
                     } else if prefix.is_some() && found_match {
                         // Past prefix range
                         break;
                     }
-                    new_entry = new_cursor.next();
+                    new_cursor.advance();
                 }
                 (Some((old_key, old_value)), None) => {
                     // Only old entries remain - all deletions
                     if self.matches_prefix(old_key) {
                         found_match = true;
                         events.push(DiffEvent::Deleted(Deleted {
-                            key: old_key.clone(),
-                            old_value: old_value.clone(),
+                            key: old_key.to_vec(),
+                            old_value: old_value.to_vec(),
                         }));
                     } else if prefix.is_some() && found_match {
                         // Past prefix range
                         break;
                     }
-                    old_entry = old_cursor.next();
+                    old_cursor.advance();
                 }
                 (Some((old_key, old_value)), Some((new_key, new_value))) => {
                     // Both have entries - compare keys
@@ -185,21 +180,21 @@ impl<'a> Differ<'a> {
                         if self.matches_prefix(old_key) {
                             found_match = true;
                             events.push(DiffEvent::Deleted(Deleted {
-                                key: old_key.clone(),
-                                old_value: old_value.clone(),
+                                key: old_key.to_vec(),
+                                old_value: old_value.to_vec(),
                             }));
                         }
-                        old_entry = old_cursor.next();
+                        old_cursor.advance();
                     } else if old_key > new_key {
                         // Key only in new tree - added
                         if self.matches_prefix(new_key) {
                             found_match = true;
                             events.push(DiffEvent::Added(Added {
-                                key: new_key.clone(),
-                                value: new_value.clone(),
+                                key: new_key.to_vec(),
+                                value: new_value.to_vec(),
                             }));
                         }
-                        new_entry = new_cursor.next();
+                        new_cursor.advance();
                     } else {
                         // Same key in both trees
                         if old_value != new_value {
@@ -207,17 +202,17 @@ impl<'a> Differ<'a> {
                             if self.matches_prefix(old_key) {
                                 found_match = true;
                                 events.push(DiffEvent::Modified(Modified {
-                                    key: old_key.clone(),
-                                    old_value: old_value.clone(),
-                                    new_value: new_value.clone(),
+                                    key: old_key.to_vec(),
+                                    old_value: old_value.to_vec(),
+                                    new_value: new_value.to_vec(),
                                 }));
                             }
                         }
                         // else: values are identical, no diff event needed
 
                         // Advance both cursors
-                        old_entry = old_cursor.next();
-                        new_entry = new_cursor.next();
+                        old_cursor.advance();
+                        new_cursor.advance();
                     }
                 }
                 (None, None) => {

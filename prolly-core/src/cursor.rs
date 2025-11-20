@@ -20,8 +20,6 @@ pub struct TreeCursor<'a> {
     /// index points to next unvisited child/entry
     /// Uses Arc<Node> to avoid cloning nodes during traversal
     stack: Vec<(Arc<Node>, usize)>,
-    /// Current key-value pair (None until first next() call)
-    current: Option<(Vec<u8>, Vec<u8>)>,
 }
 
 impl<'a> TreeCursor<'a> {
@@ -40,7 +38,6 @@ impl<'a> TreeCursor<'a> {
         let mut cursor = TreeCursor {
             store,
             stack: Vec::new(),
-            current: None,
         };
 
         // Initialize by descending to first leaf or seeking to prefix
@@ -156,12 +153,29 @@ impl<'a> TreeCursor<'a> {
         None
     }
 
+    /// Peek at the current key-value pair without cloning.
+    ///
+    /// Returns references to (key, value), or None if exhausted.
+    /// Use this for comparisons to avoid cloning overhead.
+    pub fn peek(&self) -> Option<(&[u8], &[u8])> {
+        if self.stack.is_empty() {
+            return None;
+        }
+
+        let (node, idx) = self.stack.last()?;
+
+        if node.is_leaf && *idx < node.keys.len() {
+            Some((&node.keys[*idx], &node.values[*idx]))
+        } else {
+            None
+        }
+    }
+
     /// Advance to the next key-value pair.
     ///
     /// Returns (key, value) tuple, or None if exhausted
     pub fn next(&mut self) -> Option<(Vec<u8>, Vec<u8>)> {
         if self.stack.is_empty() {
-            self.current = None;
             return None;
         }
 
@@ -176,7 +190,6 @@ impl<'a> TreeCursor<'a> {
             if idx < node.keys.len() {
                 let key = node.keys[idx].clone();
                 let value = node.values[idx].clone();
-                self.current = Some((key.clone(), value.clone()));
 
                 // Advance index
                 let stack_len = self.stack.len();
@@ -208,6 +221,13 @@ impl<'a> TreeCursor<'a> {
                 return self.next();
             }
         }
+    }
+
+    /// Advance cursor without returning the value.
+    ///
+    /// Use with peek() to avoid cloning when you only need to compare.
+    pub fn advance(&mut self) {
+        let _ = self.next();
     }
 
     /// After exhausting a leaf, move to the next leaf.
