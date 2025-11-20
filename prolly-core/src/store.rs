@@ -21,7 +21,8 @@ pub trait BlockStore: Send + Sync {
     fn put_node(&self, node_hash: &Hash, node: Node);
 
     /// Retrieve a node by its hash. Returns None if not found.
-    fn get_node(&self, node_hash: &Hash) -> Option<Node>;
+    /// Returns Arc<Node> to avoid cloning nodes on retrieval.
+    fn get_node(&self, node_hash: &Hash) -> Option<Arc<Node>>;
 
     /// Delete a node by its hash. Returns true if deleted, false if not found.
     fn delete_node(&self, node_hash: &Hash) -> bool;
@@ -36,7 +37,7 @@ pub trait BlockStore: Send + Sync {
 /// In-memory node storage using a HashMap.
 #[derive(Debug, Clone)]
 pub struct MemoryBlockStore {
-    nodes: Arc<Mutex<HashMap<Hash, Node>>>,
+    nodes: Arc<Mutex<HashMap<Hash, Arc<Node>>>>,
 }
 
 impl MemoryBlockStore {
@@ -57,10 +58,10 @@ impl Default for MemoryBlockStore {
 impl BlockStore for MemoryBlockStore {
     fn put_node(&self, node_hash: &Hash, node: Node) {
         let mut nodes = self.nodes.lock().unwrap();
-        nodes.insert(node_hash.clone(), node);
+        nodes.insert(node_hash.clone(), Arc::new(node));
     }
 
-    fn get_node(&self, node_hash: &Hash) -> Option<Node> {
+    fn get_node(&self, node_hash: &Hash) -> Option<Arc<Node>> {
         let nodes = self.nodes.lock().unwrap();
         nodes.get(node_hash).cloned()
     }
@@ -164,7 +165,7 @@ impl BlockStore for FileSystemBlockStore {
             .expect("Failed to write node file");
     }
 
-    fn get_node(&self, node_hash: &Hash) -> Option<Node> {
+    fn get_node(&self, node_hash: &Hash) -> Option<Arc<Node>> {
         let path = self.node_path(node_hash);
         if !path.exists() {
             return None;
@@ -172,7 +173,7 @@ impl BlockStore for FileSystemBlockStore {
         let mut file = fs::File::open(path).ok()?;
         let mut data = Vec::new();
         file.read_to_end(&mut data).ok()?;
-        Some(self.deserialize_node(&data))
+        Some(Arc::new(self.deserialize_node(&data)))
     }
 
     fn delete_node(&self, node_hash: &Hash) -> bool {
@@ -283,7 +284,7 @@ impl BlockStore for CachedFSBlockStore {
                 // Already have this node, just refresh it in cache
                 drop(cache);
                 let mut cache = self.cache.lock().unwrap();
-                cache.put(node_hash.clone(), node);
+                cache.put(node_hash.clone(), Arc::new(node));
                 return;
             }
         }
@@ -293,10 +294,10 @@ impl BlockStore for CachedFSBlockStore {
 
         // Add to cache (will evict if needed)
         let mut cache = self.cache.lock().unwrap();
-        cache.put(node_hash.clone(), node);
+        cache.put(node_hash.clone(), Arc::new(node));
     }
 
-    fn get_node(&self, node_hash: &Hash) -> Option<Node> {
+    fn get_node(&self, node_hash: &Hash) -> Option<Arc<Node>> {
         // Try cache first
         {
             let mut cache = self.cache.lock().unwrap();
@@ -344,7 +345,7 @@ impl BlockStore for CachedFSBlockStore {
 
 /// LRU cache implementation using a HashMap and a linked list simulation
 struct LruCache {
-    items: HashMap<Hash, (Node, usize)>, // (node, timestamp)
+    items: HashMap<Hash, (Arc<Node>, usize)>, // (node, timestamp)
     next_timestamp: usize,
     max_size: usize,
     cache_hits: usize,
@@ -368,7 +369,7 @@ impl LruCache {
         self.items.contains_key(key)
     }
 
-    fn get(&mut self, key: &Hash) -> Option<Node> {
+    fn get(&mut self, key: &Hash) -> Option<Arc<Node>> {
         if let Some((node, _)) = self.items.get_mut(key) {
             self.cache_hits += 1;
             let node = node.clone();
@@ -382,7 +383,7 @@ impl LruCache {
         }
     }
 
-    fn put(&mut self, key: Hash, value: Node) {
+    fn put(&mut self, key: Hash, value: Arc<Node>) {
         let timestamp = self.next_timestamp;
         self.next_timestamp += 1;
 

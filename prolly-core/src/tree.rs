@@ -275,7 +275,8 @@ impl ProllyTree {
 
                 // Rebuild child (or reuse if no mutations)
                 if let Some(child_node) = self.store.get_node(child_hash) {
-                    let new_child = self.rebuild_with_mutations(child_node, child_mutations);
+                    // Dereference Arc to get owned Node for rebuilding
+                    let new_child = self.rebuild_with_mutations((*child_node).clone(), child_mutations);
                     new_children.push(new_child);
                 }
             }
@@ -385,7 +386,7 @@ impl ProllyTree {
                 // Unwrap single-child internal node
                 let child_hash = &node.values[0];
                 if let Some(child) = self.store.get_node(child_hash) {
-                    return child;
+                    return (*child).clone();
                 }
             }
             return node;
