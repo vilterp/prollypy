@@ -71,8 +71,9 @@ pub fn find_reachable_nodes(store: &dyn BlockStore, root_hashes: &HashSet<Hash>)
         if !node.is_leaf {
             // Internal node - add all children to visit
             for child_hash in &node.values {
-                if !reachable.contains(child_hash) {
-                    to_visit.push(child_hash.clone());
+                let hash_vec = child_hash.to_vec();
+                if !reachable.contains(&hash_vec) {
+                    to_visit.push(hash_vec);
                 }
             }
         }
