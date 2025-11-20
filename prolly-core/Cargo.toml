@@ -1,0 +1,29 @@
+[package]
+name = "prolly-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+sha2.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+bincode = "1.3"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+
+# For wasm compatibility, use getrandom with js feature
+getrandom = { version = "0.2", features = ["js"] }
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile = "3.10"
+
+[[bench]]
+name = "tree_bench"
+harness = false
