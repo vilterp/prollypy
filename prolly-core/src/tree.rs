@@ -124,21 +124,21 @@ impl ProllyTree {
         if node.is_leaf {
             // Hash key-value pairs
             for (key, value) in node.keys.iter().zip(node.values.iter()) {
-                combined.extend_from_slice(key);
+                combined.extend_from_slice(key.as_ref());
                 combined.push(b':');
-                combined.extend_from_slice(value);
+                combined.extend_from_slice(value.as_ref());
                 combined.push(b'|');
             }
         } else {
             // Hash separator keys and child hashes
             for (i, child_hash) in node.values.iter().enumerate() {
                 if i < node.keys.len() {
-                    combined.extend_from_slice(&node.keys[i]);
+                    combined.extend_from_slice(node.keys[i].as_ref());
                 } else {
                     combined.push(b'_');
                 }
                 combined.push(b':');
-                combined.extend_from_slice(child_hash);
+                combined.extend_from_slice(child_hash.as_ref());
                 combined.push(b'|');
             }
         }
@@ -254,10 +254,10 @@ impl ProllyTree {
                     // Determine if this mutation belongs to this child
                     let belongs_here = if i == 0 {
                         // First child: all keys < first separator
-                        node.keys.is_empty() || key.as_slice() < node.keys[0].as_slice()
+                        node.keys.is_empty() || key.as_slice() < node.keys[0].as_ref()
                     } else if i < node.keys.len() {
                         // Middle child: separator[i-1] <= key < separator[i]
-                        key.as_slice() < node.keys[i].as_slice()
+                        key.as_slice() < node.keys[i].as_ref()
                     } else {
                         // Last child: all remaining keys
                         true
@@ -274,7 +274,8 @@ impl ProllyTree {
                 let child_mutations = &mutations[start_idx..mut_idx];
 
                 // Rebuild child (or reuse if no mutations)
-                if let Some(child_node) = self.store.get_node(child_hash) {
+                let child_hash_vec = child_hash.to_vec();
+                if let Some(child_node) = self.store.get_node(&child_hash_vec) {
                     // Dereference Arc to get owned Node for rebuilding
                     let new_child = self.rebuild_with_mutations((*child_node).clone(), child_mutations);
                     new_children.push(new_child);
@@ -293,7 +294,7 @@ impl ProllyTree {
     }
 
     /// Get the first actual key in a node's subtree.
-    fn get_first_key(&self, node: &Node) -> Option<Vec<u8>> {
+    fn get_first_key(&self, node: &Node) -> Option<Arc<[u8]>> {
         if node.is_leaf {
             node.keys.first().cloned()
         } else {
@@ -301,8 +302,8 @@ impl ProllyTree {
             if node.values.is_empty() {
                 return None;
             }
-            let child_hash = &node.values[0];
-            let child = self.store.get_node(child_hash)?;
+            let child_hash = node.values[0].to_vec();
+            let child = self.store.get_node(&child_hash)?;
             self.get_first_key(&child)
         }
     }
@@ -336,7 +337,7 @@ impl ProllyTree {
             if node_size < MIN_FANOUT && !internal_nodes.is_empty() && node_num == num_internal_nodes - 1 {
                 // Last node is too small - merge with previous node
                 let node_children = &children[child_idx..child_idx + node_size];
-                let mut additions: Vec<(Hash, Option<Vec<u8>>)> = Vec::new();
+                let mut additions: Vec<(Hash, Option<Arc<[u8]>>)> = Vec::new();
 
                 for child in node_children {
                     let child_hash = self.store_node(child.clone());
@@ -346,7 +347,7 @@ impl ProllyTree {
 
                 let prev_node: &mut Node = internal_nodes.last_mut().unwrap();
                 for (child_hash, separator) in additions {
-                    prev_node.values.push(child_hash);
+                    prev_node.values.push(Arc::from(child_hash));
                     if let Some(sep) = separator {
                         if prev_node.keys.len() < prev_node.values.len() - 1 {
                             prev_node.keys.push(sep);
@@ -364,7 +365,7 @@ impl ProllyTree {
 
             for (i, child) in node_children.iter().enumerate() {
                 let child_hash = self.store_node(child.clone());
-                internal_node.values.push(child_hash);
+                internal_node.values.push(Arc::from(child_hash));
 
                 // Add separator key (first key of next child)
                 if i < node_children.len() - 1 {
@@ -384,8 +385,8 @@ impl ProllyTree {
             let node = internal_nodes.into_iter().next().unwrap();
             if node.values.len() == 1 {
                 // Unwrap single-child internal node
-                let child_hash = &node.values[0];
-                if let Some(child) = self.store.get_node(child_hash) {
+                let child_hash = node.values[0].to_vec();
+                if let Some(child) = self.store.get_node(&child_hash) {
                     return (*child).clone();
                 }
             }
@@ -401,22 +402,22 @@ impl ProllyTree {
         &self,
         node: &Node,
         mutations: &[(Vec<u8>, Vec<u8>)],
-    ) -> Vec<(Vec<u8>, Vec<u8>)> {
+    ) -> Vec<(Arc<[u8]>, Arc<[u8]>)> {
         let mut result = Vec::with_capacity(node.keys.len() + mutations.len());
         let mut i = 0;
         let mut j = 0;
 
         while i < node.keys.len() && j < mutations.len() {
-            if node.keys[i].as_slice() < mutations[j].0.as_slice() {
+            if node.keys[i].as_ref() < mutations[j].0.as_slice() {
                 result.push((node.keys[i].clone(), node.values[i].clone()));
                 i += 1;
-            } else if node.keys[i].as_slice() == mutations[j].0.as_slice() {
+            } else if node.keys[i].as_ref() == mutations[j].0.as_slice() {
                 // New value overwrites old
-                result.push(mutations[j].clone());
+                result.push((Arc::from(mutations[j].0.as_slice()), Arc::from(mutations[j].1.as_slice())));
                 i += 1;
                 j += 1;
             } else {
-                result.push(mutations[j].clone());
+                result.push((Arc::from(mutations[j].0.as_slice()), Arc::from(mutations[j].1.as_slice())));
                 j += 1;
             }
         }
@@ -429,7 +430,7 @@ impl ProllyTree {
 
         // Append remaining mutations
         while j < mutations.len() {
-            result.push(mutations[j].clone());
+            result.push((Arc::from(mutations[j].0.as_slice()), Arc::from(mutations[j].1.as_slice())));
             j += 1;
         }
 
@@ -437,23 +438,23 @@ impl ProllyTree {
     }
 
     /// Build leaf nodes from sorted items using rolling hash for splits.
-    fn build_leaves(&self, items: &[(Vec<u8>, Vec<u8>)]) -> Vec<Node> {
+    fn build_leaves(&self, items: &[(Arc<[u8]>, Arc<[u8]>)]) -> Vec<Node> {
         if items.is_empty() {
             return vec![Node::new_leaf()];
         }
 
         let mut leaves = Vec::new();
-        let mut current_keys = Vec::new();
-        let mut current_values = Vec::new();
+        let mut current_keys: Vec<Arc<[u8]>> = Vec::new();
+        let mut current_values: Vec<Arc<[u8]>> = Vec::new();
         let mut roll_hash = self.seed;
 
         for (i, (key, value)) in items.iter().enumerate() {
-            current_keys.push(key.to_vec());
-            current_values.push(value.to_vec());
+            current_keys.push(key.clone());
+            current_values.push(value.clone());
 
             // Update rolling hash with the key and value bytes
-            roll_hash = self.rolling_hash(roll_hash, key);
-            roll_hash = self.rolling_hash(roll_hash, value);
+            roll_hash = self.rolling_hash(roll_hash, key.as_ref());
+            roll_hash = self.rolling_hash(roll_hash, value.as_ref());
 
             // Split if: (1) have minimum entries AND hash below pattern OR (2) last item
             let has_min = current_keys.len() >= MIN_NODE_SIZE;
@@ -495,7 +496,7 @@ impl ProllyTree {
     /// # Arguments
     ///
     /// * `prefix` - Optional prefix to filter keys. If provided, only returns keys starting with this prefix.
-    pub fn items(&self, prefix: Option<&[u8]>) -> Vec<(Vec<u8>, Vec<u8>)> {
+    pub fn items(&self, prefix: Option<&[u8]>) -> Vec<(Arc<[u8]>, Arc<[u8]>)> {
         let root_hash = self.get_root_hash();
         let mut cursor = TreeCursor::new(self.store.as_ref(), root_hash, prefix);
         let mut result = Vec::new();
@@ -503,7 +504,7 @@ impl ProllyTree {
         while let Some((key, value)) = cursor.next() {
             // If we have a prefix, check if we've moved past it
             if let Some(prefix_bytes) = prefix {
-                if !key.starts_with(prefix_bytes) {
+                if !key.as_ref().starts_with(prefix_bytes) {
                     break;
                 }
             }
@@ -549,9 +550,12 @@ mod tests {
         assert_eq!(tree.count(), 3);
 
         let items = tree.items(None);
-        assert_eq!(items[0], (b"a".to_vec(), b"val_a".to_vec()));
-        assert_eq!(items[1], (b"b".to_vec(), b"val_b".to_vec()));
-        assert_eq!(items[2], (b"c".to_vec(), b"val_c".to_vec()));
+        assert_eq!(items[0].0.as_ref(), b"a");
+        assert_eq!(items[0].1.as_ref(), b"val_a");
+        assert_eq!(items[1].0.as_ref(), b"b");
+        assert_eq!(items[1].1.as_ref(), b"val_b");
+        assert_eq!(items[2].0.as_ref(), b"c");
+        assert_eq!(items[2].1.as_ref(), b"val_c");
     }
 
     #[test]
@@ -560,12 +564,12 @@ mod tests {
 
         // Insert initial value
         tree.insert_batch(vec![(b"key".to_vec(), b"value1".to_vec())], false);
-        assert_eq!(tree.items(None)[0].1, b"value1");
+        assert_eq!(tree.items(None)[0].1.as_ref(), b"value1");
 
         // Update value
         tree.insert_batch(vec![(b"key".to_vec(), b"value2".to_vec())], false);
         assert_eq!(tree.count(), 1);
-        assert_eq!(tree.items(None)[0].1, b"value2");
+        assert_eq!(tree.items(None)[0].1.as_ref(), b"value2");
     }
 
     #[test]
@@ -587,7 +591,7 @@ mod tests {
         let items = tree.items(None);
         for (i, (key, _)) in items.iter().enumerate() {
             let expected_key = format!("key{:04}", i).into_bytes();
-            assert_eq!(key, &expected_key);
+            assert_eq!(key.as_ref(), expected_key.as_slice());
         }
     }
 
