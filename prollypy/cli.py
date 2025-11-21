@@ -1121,10 +1121,6 @@ def pull_from_remote(prolly_dir: str = '.prolly', cache_size: int = 1000,
         remote_name: Name of remote to pull from (default: origin)
         threads: Number of parallel download threads (default: 50)
     """
-    if not HAS_TQDM:
-        print("Error: tqdm is required for progress bar. Install with: pip install tqdm")
-        return
-
     # Load remote store from config
     config_path = os.path.join(prolly_dir, 'config.toml')
     try:
@@ -1173,32 +1169,37 @@ region = "us-east-1"  # optional, defaults to us-east-1
 
     # Pull using repo method
     print(f"\nPulling from {remote.url()} ({threads} threads)")
-    try:
-        total, pull_iter = repo.pull(remote, threads=threads)
-    except ValueError as e:
-        print(f"Error: {e}")
+
+    # Track counts
+    commits_done = 0
+    nodes_done = 0
+    last_progress = None
+
+    # Import PullItemType for checking item types
+    from .repo import PullItemType
+
+    for progress in repo.pull(remote, threads=threads):
+        last_progress = progress
+        if progress.item_type == PullItemType.COMMIT:
+            commits_done += 1
+        else:
+            nodes_done += 1
+
+        # Update progress display
+        print(f"\rDone: {progress.done} | In progress: {progress.in_progress} | Pending: {progress.pending}  ", end="", flush=True)
+
+    print()  # New line after progress
+
+    if last_progress is None:
+        print("Already up to date!")
         return
-
-    if total == 0:
-        print("No nodes to download (commits only)")
-        # Still need to consume the iterator to update refs
-        for _ in pull_iter:
-            pass
-        print(f"Updated {ref_name} to {remote_commit[:8]}")
-        return
-
-    print(f"Nodes to pull: {total}")
-
-    # Iterate with progress bar
-    pulled = 0
-    for node_hash in tqdm(pull_iter, total=total, desc="Pulling", unit="node"):
-        pulled += 1
 
     # Summary
     print(f"\n{'='*60}")
     print("PULL COMPLETE")
     print(f"{'='*60}")
-    print(f"Nodes pulled: {pulled}/{total}")
+    print(f"Commits pulled: {commits_done}")
+    print(f"Nodes pulled: {nodes_done}")
     print(f"Updated {ref_name} to {remote_commit[:8]}")
 
 

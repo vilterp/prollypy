@@ -7,12 +7,31 @@ Includes commit tracking, branching, and reference management.
 
 import time
 import heapq
-from typing import Optional, List, Dict, Tuple, Iterator, Set
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+from dataclasses import dataclass
+from enum import Enum
+from typing import Optional, List, Dict, Tuple, Iterator, Set, Union
+from concurrent.futures import ThreadPoolExecutor, Future
+from queue import Queue, Empty
 
 from .store import BlockStore, Remote
 from .commit_graph_store import Commit, LocalCommitGraphStore
 from .commonality import collect_node_hashes
+
+
+class PullItemType(Enum):
+    COMMIT = "commit"
+    NODE = "node"
+
+
+@dataclass
+class PullProgress:
+    """Progress event for pull operation."""
+    done: int
+    in_progress: int
+    pending: int
+    item_type: PullItemType
+    item_hash: bytes
 
 
 class Repo:
@@ -507,104 +526,23 @@ class Repo:
 
         return (total, push_generator())
 
-    def get_commits_to_pull(self, remote: Remote, ref_name: str, local_commit: Optional[bytes]) -> List[bytes]:
-        """
-        Get list of commit hashes to pull from remote.
-
-        Walks from remote's ref commit back to local_commit (exclusive).
-
-        Args:
-            remote: Remote store
-            ref_name: Name of ref to pull
-            local_commit: Local commit hash (None if no local commit)
-
-        Returns:
-            List of commit hashes to pull, oldest first
-        """
-        remote_commit_hex = remote.get_ref_commit(ref_name)
-        if not remote_commit_hex:
-            return []
-
-        commits_to_pull = []
-        current_hash = bytes.fromhex(remote_commit_hex)
-
-        # Walk backwards from remote commit
-        while True:
-            # If we've reached our local commit, stop
-            if local_commit and current_hash == local_commit:
-                break
-
-            commits_to_pull.append(current_hash)
-
-            # Get parents from remote
-            parents = remote.get_parents(current_hash)
-            if not parents:
-                break
-
-            # Follow first parent
-            current_hash = parents[0]
-
-        # Reverse so oldest is first
-        commits_to_pull.reverse()
-        return commits_to_pull
-
-    def get_nodes_to_pull(self, remote: Remote, commits: List[bytes]) -> Set[bytes]:
-        """
-        Get all nodes that need to be pulled for the given commits.
-
-        Args:
-            remote: Remote store
-            commits: List of commit hashes to pull
-
-        Returns:
-            Set of node hashes to download
-        """
-        # Collect tree roots from commits
-        tree_roots: Set[bytes] = set()
-        for commit_hash in commits:
-            commit = remote.get_commit(commit_hash)
-            if commit:
-                tree_roots.add(commit.tree_root)
-
-        # Collect all nodes reachable from new tree roots
-        new_nodes: Set[bytes] = set()
-        for tree_root in tree_roots:
-            nodes = collect_node_hashes(remote, tree_root)
-            new_nodes.update(nodes)
-
-        # Subtract nodes we already have locally
-        local_nodes: Set[bytes] = set()
-
-        # Get tree roots from local commits that we already have
-        head_commit, _ = self.get_head()
-        if head_commit:
-            for commit_hash, commit in self.log():
-                local_tree_roots_nodes = collect_node_hashes(self.block_store, commit.tree_root)
-                local_nodes.update(local_tree_roots_nodes)
-
-        return new_nodes - local_nodes
-
     def pull(
         self,
         remote: Remote,
         threads: int = 50
-    ) -> Tuple[int, Iterator[bytes]]:
+    ) -> Iterator[PullProgress]:
         """
-        Pull nodes from a remote store.
+        Pull nodes from a remote store using parallel tree walking.
 
-        Automatically determines which nodes to pull by checking the remote's
-        ref for the current branch. After pulling, updates the local ref.
-
-        Returns a tuple of (total_count, iterator) where the iterator yields
-        each node hash as it's successfully pulled. This allows the caller
-        to render a progress bar.
+        Discovers and downloads commits and nodes concurrently using a queue-based
+        approach. Yields progress events as items are downloaded.
 
         Args:
             remote: Remote block store to pull nodes from
             threads: Number of parallel download threads (default: 50)
 
-        Returns:
-            Tuple of (total_nodes_to_pull, iterator_of_pulled_hashes)
+        Yields:
+            PullProgress events as items are downloaded
         """
         # Get current branch
         _, ref_name = self.get_head()
@@ -612,35 +550,140 @@ class Repo:
         # Get local commit for this ref
         local_commit = self.commit_graph_store.get_ref(ref_name)
 
-        # Get commits to pull
-        commits_to_pull = self.get_commits_to_pull(remote, ref_name, local_commit)
-        if not commits_to_pull:
-            return (0, iter([]))
+        # Get remote commit
+        remote_commit_hex = remote.get_ref_commit(ref_name)
+        if not remote_commit_hex:
+            return
 
-        # Get nodes to pull
-        nodes_to_pull = self.get_nodes_to_pull(remote, commits_to_pull)
-        total = len(nodes_to_pull)
+        remote_commit_hash = bytes.fromhex(remote_commit_hex)
 
-        def pull_one(node_hash: bytes) -> bytes:
-            node = remote.get_node(node_hash)
-            if node is not None:
-                self.block_store.put_node(node_hash, node)
-            return node_hash
+        # If already up to date, nothing to do
+        if local_commit and local_commit == remote_commit_hash:
+            return
 
-        def pull_generator() -> Iterator[bytes]:
-            with ThreadPoolExecutor(max_workers=threads) as executor:
-                for node_hash in executor.map(pull_one, nodes_to_pull):
-                    yield node_hash
+        # Queue items: (item_type, item_hash)
+        queue: Queue[Tuple[PullItemType, bytes]] = Queue()
 
-            # After all nodes are pulled, store commits locally
-            for commit_hash in commits_to_pull:
-                commit = remote.get_commit(commit_hash)
-                if commit:
-                    self.commit_graph_store.put_commit(commit_hash, commit)
+        # Track state with thread safety
+        lock = threading.Lock()
+        queued: Set[bytes] = set()  # Items we've added to queue
+        in_progress: Set[bytes] = set()  # Items currently being downloaded
+        done: Set[bytes] = set()  # Items completed
+        commits_downloaded: List[Tuple[bytes, Commit]] = []  # For storing after download
 
-            # Update local ref to the remote's commit
-            remote_commit_hex = remote.get_ref_commit(ref_name)
-            if remote_commit_hex:
-                self.commit_graph_store.set_ref(ref_name, bytes.fromhex(remote_commit_hex))
+        # Results queue for yielding progress
+        results: Queue[PullProgress] = Queue()
 
-        return (total, pull_generator())
+        # Check if we have an item locally
+        def have_locally(item_type: PullItemType, item_hash: bytes) -> bool:
+            if item_type == PullItemType.COMMIT:
+                return self.commit_graph_store.get_commit(item_hash) is not None
+            else:
+                return self.block_store.get_node(item_hash) is not None
+
+        # Add item to queue if we don't have it
+        def enqueue(item_type: PullItemType, item_hash: bytes):
+            with lock:
+                if item_hash in queued or item_hash in done:
+                    return
+                if have_locally(item_type, item_hash):
+                    done.add(item_hash)
+                    return
+                queued.add(item_hash)
+            queue.put((item_type, item_hash))
+
+        # Worker function
+        def worker():
+            while True:
+                try:
+                    item_type, item_hash = queue.get(timeout=0.1)
+                except Empty:
+                    # Check if we should stop
+                    with lock:
+                        if len(in_progress) == 0 and queue.empty():
+                            return
+                    continue
+
+                with lock:
+                    in_progress.add(item_hash)
+
+                try:
+                    if item_type == PullItemType.COMMIT:
+                        # Download commit
+                        commit = remote.get_commit(item_hash)
+                        if commit:
+                            with lock:
+                                commits_downloaded.append((item_hash, commit))
+
+                            # Enqueue parents we don't have
+                            for parent_hash in commit.parents:
+                                if parent_hash != local_commit:
+                                    enqueue(PullItemType.COMMIT, parent_hash)
+
+                            # Enqueue tree root
+                            enqueue(PullItemType.NODE, commit.tree_root)
+                    else:
+                        # Download node
+                        node = remote.get_node(item_hash)
+                        if node:
+                            self.block_store.put_node(item_hash, node)
+
+                            # If internal node, enqueue children
+                            if not node.is_leaf:
+                                for child_hash in node.values:
+                                    enqueue(PullItemType.NODE, child_hash)
+
+                    with lock:
+                        in_progress.discard(item_hash)
+                        done.add(item_hash)
+                        progress = PullProgress(
+                            done=len(done),
+                            in_progress=len(in_progress),
+                            pending=queue.qsize(),
+                            item_type=item_type,
+                            item_hash=item_hash
+                        )
+                    results.put(progress)
+
+                except Exception as e:
+                    with lock:
+                        in_progress.discard(item_hash)
+                    raise
+
+                queue.task_done()
+
+        # Start with remote commit
+        enqueue(PullItemType.COMMIT, remote_commit_hash)
+
+        # Start worker threads
+        workers = []
+        for _ in range(threads):
+            t = threading.Thread(target=worker, daemon=True)
+            t.start()
+            workers.append(t)
+
+        # Yield progress events as they come in
+        active_workers = threads
+        while active_workers > 0:
+            try:
+                progress = results.get(timeout=0.1)
+                yield progress
+            except Empty:
+                # Check if workers are done
+                active_workers = sum(1 for w in workers if w.is_alive())
+
+        # Drain any remaining results
+        while not results.empty():
+            yield results.get_nowait()
+
+        # Wait for all workers to finish
+        for w in workers:
+            w.join()
+
+        # Store commits locally (in order from oldest to newest)
+        commits_downloaded.sort(key=lambda x: x[1].timestamp)
+        for commit_hash, commit in commits_downloaded:
+            self.commit_graph_store.put_commit(commit_hash, commit)
+
+        # Update local ref to the remote's commit
+        self.commit_graph_store.set_ref(ref_name, remote_commit_hash)
