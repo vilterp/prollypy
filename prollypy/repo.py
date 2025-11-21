@@ -11,7 +11,7 @@ from typing import Optional, List, Dict, Tuple, Iterator, Set
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .store import BlockStore, Remote
-from .commit_graph_store import Commit, CommitGraphStore
+from .commit_graph_store import Commit, LocalCommitGraphStore
 from .commonality import collect_node_hashes
 
 
@@ -22,7 +22,7 @@ class Repo:
     Provides git-like operations: commit, branch, and reference management.
     """
 
-    def __init__(self, block_store: BlockStore, commit_graph_store: CommitGraphStore,
+    def __init__(self, block_store: BlockStore, commit_graph_store: LocalCommitGraphStore,
                  default_author: str = "unknown"):
         """
         Initialize repository.
@@ -37,7 +37,7 @@ class Repo:
         self.default_author = default_author
 
     @classmethod
-    def init_empty(cls, block_store: BlockStore, commit_graph_store: CommitGraphStore,
+    def init_empty(cls, block_store: BlockStore, commit_graph_store: LocalCommitGraphStore,
                    default_author: str = "unknown") -> 'Repo':
         """
         Initialize a new empty repository with an initial commit.

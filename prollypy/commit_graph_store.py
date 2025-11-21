@@ -111,6 +111,11 @@ class CommitGraphStore(Protocol):
         ...
 
 
+class LocalCommitGraphStore(CommitGraphStore, CheckoutStore, Protocol):
+    """Protocol for local commit storage that includes both CommitGraphStore and CheckoutStore."""
+    pass
+
+
 class MemoryCommitGraphStore:
     """In-memory implementation of CommitGraphStore."""
 
