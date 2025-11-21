@@ -30,6 +30,10 @@ class BlockStore(Protocol):
         """Retrieve a node by its hash. Returns None if not found."""
         ...
 
+    def url(self) -> str:
+        """Return a URL-like identifier for this store."""
+        ...
+
     def delete_node(self, node_hash: bytes) -> bool:
         """Delete a node by its hash. Returns True if deleted, False if not found."""
         ...
@@ -134,6 +138,10 @@ class S3BlockStore:
     def get_node(self, node_hash: bytes) -> Optional[Node]:
         """Retrieve a node from S3. Not yet implemented."""
         raise NotImplementedError("S3BlockStore.get_node not yet implemented")
+
+    def url(self) -> str:
+        """Return S3 URL for this store."""
+        return f"s3://{self.bucket}/{self.prefix}"
 
     def delete_node(self, node_hash: bytes) -> bool:
         """Delete a node from S3. Not yet implemented."""

@@ -1084,7 +1084,7 @@ region = "us-east-1"  # optional, defaults to us-east-1
         print(f"Base commit: {base_hash.hex()[:8]}")
 
     # Push using repo method
-    print(f"\nPushing to s3://{remote.bucket}/{remote.prefix} ({threads} threads)")
+    print(f"\nPushing to {remote.url()} ({threads} threads)")
     try:
         total, push_iter = repo.push(remote, base_commit=base_hash, threads=threads)
     except ValueError as e:
