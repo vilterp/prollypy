@@ -179,7 +179,7 @@ class SqliteCommitGraphStore(LocalCommitGraphStore):
             db_path: Path to SQLite database file
         """
         self.db_path = db_path
-        self.conn = sqlite3.connect(db_path)
+        self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self._create_tables()
 
     def _create_tables(self):
