@@ -2,8 +2,9 @@
 Protocol definitions for storage backends.
 """
 
-from typing import Protocol, Optional, Iterator, List
+from typing import Protocol, Optional, Iterator, List, Dict
 from ..node import Node
+from ..commit_graph_store import Commit
 
 
 class BlockStore(Protocol):
@@ -35,7 +36,7 @@ class BlockStore(Protocol):
 
 
 class Remote(BlockStore, Protocol):
-    """Protocol for remote storage that tracks refs. Extends BlockStore."""
+    """Protocol for remote storage that tracks refs and commits. Extends BlockStore."""
 
     def list_refs(self) -> List[str]:
         """List all refs on the remote."""
@@ -54,4 +55,26 @@ class Remote(BlockStore, Protocol):
 
         Returns True if update succeeded, False if there was a conflict.
         """
+        ...
+
+    # CommitGraphStore methods for remote commit storage
+
+    def put_commit(self, commit_hash: bytes, commit: Commit) -> None:
+        """Store a commit by its hash."""
+        ...
+
+    def get_commit(self, commit_hash: bytes) -> Optional[Commit]:
+        """Retrieve a commit by its hash. Returns None if not found."""
+        ...
+
+    def get_parents(self, commit_hash: bytes) -> List[bytes]:
+        """Get parent commit hashes for a given commit."""
+        ...
+
+    def set_ref(self, name: str, commit_hash: bytes) -> None:
+        """Set a reference to point to a commit."""
+        ...
+
+    def get_ref(self, name: str) -> Optional[bytes]:
+        """Get the commit hash for a reference. Returns None if not found."""
         ...

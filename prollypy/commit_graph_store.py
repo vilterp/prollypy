@@ -59,6 +59,18 @@ class Commit:
         return hashlib.sha256(serialized).digest()
 
 
+class CheckoutStore(Protocol):
+    """Protocol for HEAD management (checkout operations)."""
+
+    def set_head(self, ref_name: str) -> None:
+        """Set HEAD to point to a branch name."""
+        ...
+
+    def get_head(self) -> Optional[str]:
+        """Get the branch name that HEAD points to. Returns None if not set."""
+        ...
+
+
 class CommitGraphStore(Protocol):
     """Protocol for storing commits and references."""
 
@@ -86,14 +98,6 @@ class CommitGraphStore(Protocol):
         """List all references and their commit hashes."""
         ...
 
-    def set_head(self, ref_name: str) -> None:
-        """Set HEAD to point to a branch name."""
-        ...
-
-    def get_head(self) -> Optional[str]:
-        """Get the branch name that HEAD points to. Returns None if not set."""
-        ...
-
     def find_commit_by_prefix(self, prefix: str) -> Optional[bytes]:
         """
         Find a commit by its hash prefix (partial hash).
@@ -107,8 +111,13 @@ class CommitGraphStore(Protocol):
         ...
 
 
-class MemoryCommitGraphStore:
-    """In-memory implementation of CommitGraphStore."""
+class LocalCommitGraphStore(CommitGraphStore, CheckoutStore, Protocol):
+    """Protocol for local commit storage that includes both CommitGraphStore and CheckoutStore."""
+    pass
+
+
+class MemoryCommitGraphStore(LocalCommitGraphStore):
+    """In-memory implementation of LocalCommitGraphStore."""
 
     def __init__(self):
         self.commits: Dict[bytes, Commit] = {}
@@ -159,8 +168,8 @@ class MemoryCommitGraphStore:
         return matches[0] if len(matches) == 1 else None
 
 
-class SqliteCommitGraphStore:
-    """SQLite-based implementation of CommitGraphStore."""
+class SqliteCommitGraphStore(LocalCommitGraphStore):
+    """SQLite-based implementation of LocalCommitGraphStore."""
 
     def __init__(self, db_path: str):
         """
@@ -170,7 +179,7 @@ class SqliteCommitGraphStore:
             db_path: Path to SQLite database file
         """
         self.db_path = db_path
-        self.conn = sqlite3.connect(db_path)
+        self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self._create_tables()
 
     def _create_tables(self):

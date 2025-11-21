@@ -2,6 +2,7 @@
 S3-based storage backend for ProllyTree nodes.
 """
 
+import json
 import os
 import pickle
 import tomllib
@@ -11,6 +12,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 from ..node import Node
+from ..commit_graph_store import Commit
 from .protocols import Remote
 
 
@@ -104,8 +106,18 @@ class S3BlockStore(Remote):
         )
 
     def get_node(self, node_hash: bytes) -> Optional[Node]:
-        """Retrieve a node from S3. Not yet implemented."""
-        raise NotImplementedError("S3BlockStore.get_node not yet implemented")
+        """Retrieve a node from S3."""
+        hash_hex = node_hash.hex()
+        key = f"{self.prefix}blocks/{hash_hex[:2]}/{hash_hex[2:]}"
+
+        try:
+            response = self.s3.get_object(Bucket=self.bucket, Key=key)
+            data = response['Body'].read()
+            return pickle.loads(data)
+        except ClientError as e:
+            if e.response['Error']['Code'] == 'NoSuchKey':
+                return None
+            raise
 
     def url(self) -> str:
         """Return S3 URL for this store."""
@@ -204,3 +216,46 @@ class S3BlockStore(Remote):
             if error_code in ('PreconditionFailed', 'ConditionalRequestConflict'):
                 return False
             raise
+
+    # CommitGraphStore methods for remote commit storage
+
+    def put_commit(self, commit_hash: bytes, commit: Commit) -> None:
+        """Store a commit to S3 under commits/<hash>."""
+        key = f"{self.prefix}commits/{commit_hash.hex()}"
+        data = json.dumps(commit.to_dict()).encode('utf-8')
+        self.s3.put_object(
+            Bucket=self.bucket,
+            Key=key,
+            Body=data
+        )
+
+    def get_commit(self, commit_hash: bytes) -> Optional[Commit]:
+        """Retrieve a commit from S3."""
+        key = f"{self.prefix}commits/{commit_hash.hex()}"
+        try:
+            response = self.s3.get_object(Bucket=self.bucket, Key=key)
+            data = json.loads(response['Body'].read().decode('utf-8'))
+            return Commit.from_dict(data)
+        except ClientError as e:
+            if e.response['Error']['Code'] == 'NoSuchKey':
+                return None
+            raise
+
+    def get_parents(self, commit_hash: bytes) -> List[bytes]:
+        """Get parent commit hashes for a given commit."""
+        commit = self.get_commit(commit_hash)
+        return commit.parents if commit else []
+
+    def set_ref(self, name: str, commit_hash: bytes) -> None:
+        """Set a reference to point to a commit (hex string stored in S3)."""
+        key = f"{self.prefix}refs/{name}"
+        self.s3.put_object(
+            Bucket=self.bucket,
+            Key=key,
+            Body=commit_hash.hex().encode('utf-8')
+        )
+
+    def get_ref(self, name: str) -> Optional[bytes]:
+        """Get the commit hash for a reference as bytes."""
+        hex_str = self.get_ref_commit(name)
+        return bytes.fromhex(hex_str) if hex_str else None
