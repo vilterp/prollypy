@@ -58,8 +58,15 @@ class Remote(Protocol):
         """Get the commit hash for a ref. Returns None if ref doesn't exist."""
         ...
 
-    def set_ref_commit(self, ref_name: str, commit_hash: str):
-        """Set the commit hash for a ref."""
+    def update_ref(self, ref_name: str, old_hash: Optional[str], new_hash: str) -> bool:
+        """
+        Update a ref with CAS semantics.
+
+        Only updates if the current value matches old_hash.
+        old_hash=None means the ref should not exist (create new).
+
+        Returns True if update succeeded, False if there was a conflict.
+        """
         ...
 
 
@@ -200,15 +207,59 @@ class S3BlockStore:
                 return None
             raise
 
-    def set_ref_commit(self, ref_name: str, commit_hash: str):
-        """Set the commit hash for a ref."""
+    def update_ref(self, ref_name: str, old_hash: Optional[str], new_hash: str) -> bool:
+        """
+        Update a ref with CAS semantics using S3 conditional writes.
+
+        Uses ETag for conditional updates to detect concurrent modifications.
+
+        Returns True if update succeeded, False if there was a conflict.
+        """
         key = f"{self.prefix}refs/{ref_name}"
 
-        self.s3.put_object(
-            Bucket=self.bucket,
-            Key=key,
-            Body=commit_hash.encode('utf-8')
-        )
+        try:
+            if old_hash is None:
+                # Creating new ref - should not exist
+                # Use IfNoneMatch to ensure it doesn't exist
+                self.s3.put_object(
+                    Bucket=self.bucket,
+                    Key=key,
+                    Body=new_hash.encode('utf-8'),
+                    IfNoneMatch='*'
+                )
+            else:
+                # Updating existing ref - get current ETag first
+                try:
+                    response = self.s3.get_object(Bucket=self.bucket, Key=key)
+                    current_value = response['Body'].read().decode('utf-8').strip()
+                    etag = response['ETag']
+
+                    # Check if current value matches expected old_hash
+                    if current_value != old_hash:
+                        return False
+
+                    # Update with ETag condition
+                    self.s3.put_object(
+                        Bucket=self.bucket,
+                        Key=key,
+                        Body=new_hash.encode('utf-8'),
+                        IfMatch=etag
+                    )
+                except ClientError as e:
+                    if e.response['Error']['Code'] == 'NoSuchKey':
+                        # Ref doesn't exist but we expected it to
+                        return False
+                    raise
+
+            return True
+
+        except ClientError as e:
+            error_code = e.response['Error']['Code']
+            # PreconditionFailed means ETag didn't match (concurrent update)
+            # or object already exists (for IfNoneMatch)
+            if error_code in ('PreconditionFailed', 'ConditionalRequestConflict'):
+                return False
+            raise
 
 
 class MemoryBlockStore:

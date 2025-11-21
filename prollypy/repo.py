@@ -496,7 +496,12 @@ class Repo:
                 for node_hash in executor.map(push_one, nodes_to_push):
                     yield node_hash
 
-            # After all nodes are pushed, update the remote's ref
-            remote.set_ref_commit(ref_name, head_hash.hex())
+            # After all nodes are pushed, update the remote's ref with CAS
+            if not remote.update_ref(ref_name, remote_commit_hex, head_hash.hex()):
+                raise RuntimeError(
+                    f"Failed to update ref '{ref_name}': concurrent push detected. "
+                    f"Expected {remote_commit_hex[:8] if remote_commit_hex else 'None'}, "
+                    f"but remote has changed."
+                )
 
         return (total, push_generator())
