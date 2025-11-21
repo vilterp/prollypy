@@ -6,7 +6,7 @@ Provides a BlockStore protocol and multiple implementations:
 - FileSystemBlockStore: Persistent storage using the filesystem
 """
 
-from typing import Protocol, Optional, Iterator
+from typing import Protocol, Optional, Iterator, List
 import os
 import pickle
 from collections import OrderedDict
@@ -44,6 +44,22 @@ class BlockStore(Protocol):
 
     def count_nodes(self) -> int:
         """Return the total number of nodes in storage."""
+        ...
+
+
+class Remote(Protocol):
+    """Protocol for remote storage that tracks refs."""
+
+    def list_refs(self) -> List[str]:
+        """List all refs on the remote."""
+        ...
+
+    def get_ref_commit(self, ref_name: str) -> Optional[str]:
+        """Get the commit hash for a ref. Returns None if ref doesn't exist."""
+        ...
+
+    def set_ref_commit(self, ref_name: str, commit_hash: str):
+        """Set the commit hash for a ref."""
         ...
 
 
@@ -128,7 +144,7 @@ class S3BlockStore:
         """Store a node to S3."""
         data = pickle.dumps(node)
         hash_hex = node_hash.hex()
-        key = f"{self.prefix}{hash_hex[:2]}/{hash_hex[2:]}"
+        key = f"{self.prefix}blocks/{hash_hex[:2]}/{hash_hex[2:]}"
 
         self.s3.put_object(
             Bucket=self.bucket,
@@ -155,6 +171,44 @@ class S3BlockStore:
     def count_nodes(self) -> int:
         """Count nodes in S3. Not yet implemented."""
         raise NotImplementedError("S3BlockStore.count_nodes not yet implemented")
+
+    # Remote protocol methods
+
+    def list_refs(self) -> List[str]:
+        """List all refs on the remote."""
+        refs = []
+        prefix = f"{self.prefix}refs/"
+
+        paginator = self.s3.get_paginator('list_objects_v2')
+        for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
+            for obj in page.get('Contents', []):
+                # Extract ref name from key like "prefix/refs/main"
+                ref_name = obj['Key'][len(prefix):]
+                refs.append(ref_name)
+
+        return refs
+
+    def get_ref_commit(self, ref_name: str) -> Optional[str]:
+        """Get the commit hash for a ref. Returns None if ref doesn't exist."""
+        key = f"{self.prefix}refs/{ref_name}"
+
+        try:
+            response = self.s3.get_object(Bucket=self.bucket, Key=key)
+            return response['Body'].read().decode('utf-8').strip()
+        except ClientError as e:
+            if e.response['Error']['Code'] == 'NoSuchKey':
+                return None
+            raise
+
+    def set_ref_commit(self, ref_name: str, commit_hash: str):
+        """Set the commit hash for a ref."""
+        key = f"{self.prefix}refs/{ref_name}"
+
+        self.s3.put_object(
+            Bucket=self.bucket,
+            Key=key,
+            Body=commit_hash.encode('utf-8')
+        )
 
 
 class MemoryBlockStore:
