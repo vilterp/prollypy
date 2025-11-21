@@ -16,10 +16,7 @@ from .node import Node
 import boto3
 from botocore.exceptions import ClientError
 
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib
+import tomllib
 
 
 class BlockStore(Protocol):
