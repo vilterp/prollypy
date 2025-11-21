@@ -9,15 +9,34 @@ import sqlite3
 import time
 import os
 import getpass
+import pickle
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Set
+
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
+
+try:
+    import boto3
+    from botocore.exceptions import ClientError
+    HAS_BOTO3 = True
+except ImportError:
+    HAS_BOTO3 = False
+
+try:
+    from tqdm import tqdm
+    HAS_TQDM = True
+except ImportError:
+    HAS_TQDM = False
 
 from .db import DB
 from .store import create_store_from_spec, CachedFSBlockStore, BlockStore
 from .diff import Differ, Added, Deleted, Modified
 from .db_diff import diff_db, DBDiff, TableDiff
 from .sqlite_import import import_sqlite_database, import_sqlite_table, validate_tree_sorted
-from .commonality import compute_commonality, print_commonality_report
+from .commonality import compute_commonality, print_commonality_report, collect_node_hashes
 from .store_gc import garbage_collect, find_garbage_nodes, GCStats
 from .tree import ProllyTree
 from .repo import Repo
@@ -1016,6 +1035,190 @@ def checkout_branch(ref_name: str, prolly_dir: str = '.prolly'):
         print(f"Error: {e}")
 
 
+def push_to_s3(prolly_dir: str = '.prolly', base_commit: Optional[str] = None,
+               cache_size: int = 1000):
+    """
+    Push nodes to S3.
+
+    Pushes all nodes reachable from HEAD but not from base_commit.
+    If base_commit is None, pushes all nodes from HEAD to initial commit(s).
+
+    Args:
+        prolly_dir: Repository directory
+        base_commit: Last commit already in S3 (optional)
+        cache_size: Cache size for cached stores
+    """
+    if not HAS_BOTO3:
+        print("Error: boto3 is required for S3 push. Install with: pip install boto3")
+        return
+
+    if not HAS_TQDM:
+        print("Error: tqdm is required for progress bar. Install with: pip install tqdm")
+        return
+
+    # Load S3 config
+    config_path = os.path.join(prolly_dir, 's3.toml')
+    if not os.path.exists(config_path):
+        print(f"Error: S3 config not found at {config_path}")
+        print("\nCreate a config file with:")
+        print("""
+[s3]
+bucket = "your-bucket-name"
+prefix = "prolly/"  # optional prefix for all blobs
+access_key_id = "YOUR_ACCESS_KEY"
+secret_access_key = "YOUR_SECRET_KEY"
+region = "us-east-1"  # optional, defaults to us-east-1
+""")
+        return
+
+    with open(config_path, 'rb') as f:
+        config = tomllib.load(f)
+
+    s3_config = config.get('s3', {})
+    bucket = s3_config.get('bucket')
+    prefix = s3_config.get('prefix', '')
+    access_key = s3_config.get('access_key_id')
+    secret_key = s3_config.get('secret_access_key')
+    region = s3_config.get('region', 'us-east-1')
+
+    if not bucket:
+        print("Error: 'bucket' not specified in s3.toml")
+        return
+    if not access_key or not secret_key:
+        print("Error: 'access_key_id' and 'secret_access_key' required in s3.toml")
+        return
+
+    # Open repository
+    repo = _get_repo(prolly_dir, cache_size=cache_size)
+
+    # Get HEAD commit
+    head_commit, ref_name = repo.get_head()
+    if head_commit is None:
+        print("Error: No commits in repository")
+        return
+
+    head_hash = head_commit.compute_hash()
+    print(f"HEAD: {head_hash.hex()[:8]} ({ref_name})")
+
+    # Collect all tree roots from HEAD to base_commit
+    print("\nCollecting commits...")
+
+    # Get all commits reachable from HEAD
+    new_tree_roots: Set[bytes] = set()
+    for commit_hash, commit in repo.log():
+        new_tree_roots.add(commit.tree_root)
+        # If we hit base_commit, stop
+        if base_commit:
+            base_hash = repo.resolve_ref(base_commit)
+            if base_hash and commit_hash == base_hash:
+                # Don't include this commit's tree in new_tree_roots
+                new_tree_roots.discard(commit.tree_root)
+                break
+
+    print(f"Tree roots to push: {len(new_tree_roots)}")
+
+    # Collect all nodes reachable from new tree roots
+    print("Collecting nodes from new commits...")
+    new_nodes: Set[bytes] = set()
+    for tree_root in new_tree_roots:
+        nodes = collect_node_hashes(repo.block_store, tree_root)
+        new_nodes.update(nodes)
+
+    print(f"Nodes reachable from new commits: {len(new_nodes)}")
+
+    # If base_commit specified, subtract nodes reachable from it
+    if base_commit:
+        base_hash = repo.resolve_ref(base_commit)
+        if base_hash is None:
+            print(f"Error: Could not resolve base commit '{base_commit}'")
+            return
+
+        base_commit_obj = repo.get_commit(base_hash)
+        if base_commit_obj is None:
+            print(f"Error: Base commit not found: {base_hash.hex()}")
+            return
+
+        print(f"Base commit: {base_hash.hex()[:8]}")
+
+        # Collect all tree roots reachable from base_commit
+        base_tree_roots: Set[bytes] = set()
+        for commit_hash, commit in repo.log(start_ref=base_commit):
+            base_tree_roots.add(commit.tree_root)
+
+        # Collect all nodes reachable from base
+        print("Collecting nodes from base commit...")
+        base_nodes: Set[bytes] = set()
+        for tree_root in base_tree_roots:
+            nodes = collect_node_hashes(repo.block_store, tree_root)
+            base_nodes.update(nodes)
+
+        print(f"Nodes reachable from base: {len(base_nodes)}")
+
+        # Subtract to get nodes to push
+        nodes_to_push = new_nodes - base_nodes
+    else:
+        nodes_to_push = new_nodes
+
+    print(f"\nNodes to push: {len(nodes_to_push)}")
+
+    if len(nodes_to_push) == 0:
+        print("Nothing to push!")
+        return
+
+    # Create S3 client
+    s3 = boto3.client(
+        's3',
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        region_name=region
+    )
+
+    # Push nodes with progress bar
+    print(f"\nPushing to s3://{bucket}/{prefix}")
+
+    total_bytes = 0
+    errors = []
+
+    for node_hash in tqdm(nodes_to_push, desc="Pushing", unit="node"):
+        node = repo.block_store.get_node(node_hash)
+        if node is None:
+            errors.append(f"Node not found: {node_hash.hex()}")
+            continue
+
+        # Serialize node
+        data = pickle.dumps(node)
+        total_bytes += len(data)
+
+        # Upload to S3
+        key = f"{prefix}{node_hash.hex()}"
+        try:
+            s3.put_object(
+                Bucket=bucket,
+                Key=key,
+                Body=data
+            )
+        except ClientError as e:
+            errors.append(f"Failed to upload {node_hash.hex()[:8]}: {e}")
+
+    # Summary
+    print(f"\n{'='*60}")
+    print("PUSH COMPLETE")
+    print(f"{'='*60}")
+    print(f"Nodes pushed: {len(nodes_to_push)}")
+    print(f"Total bytes: {total_bytes:,}")
+    if total_bytes > 1024 * 1024:
+        print(f"Total size: {total_bytes / (1024 * 1024):.2f} MB")
+    elif total_bytes > 1024:
+        print(f"Total size: {total_bytes / 1024:.2f} KB")
+
+    if errors:
+        print(f"\nErrors ({len(errors)}):")
+        for err in errors[:10]:
+            print(f"  - {err}")
+        if len(errors) > 10:
+            print(f"  ... and {len(errors) - 10} more")
+
+
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -1359,6 +1562,37 @@ Examples:
     checkout_parser.add_argument('--dir', default='.prolly',
                         help='Repository directory (default: .prolly)')
 
+    # Push subcommand
+    push_parser = subparsers.add_parser('push', help='Push nodes to S3',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  # Push all nodes from all commits
+  python cli.py push
+
+  # Push only nodes new since a specific commit
+  python cli.py push abc123
+
+  # Push using custom repository
+  python cli.py push --dir /path/to/.prolly
+
+Configuration:
+  Create .prolly/s3.toml with:
+
+  [s3]
+  bucket = "your-bucket-name"
+  prefix = "prolly/"
+  access_key_id = "YOUR_ACCESS_KEY"
+  secret_access_key = "YOUR_SECRET_KEY"
+  region = "us-east-1"
+        ''')
+    push_parser.add_argument('base_commit', nargs='?', default=None,
+                        help='Last commit already in S3 (optional, push only newer nodes)')
+    push_parser.add_argument('--dir', default='.prolly',
+                        help='Repository directory (default: .prolly)')
+    push_parser.add_argument('--cache-size', type=int, default=1000,
+                        help='Cache size for cached stores (default: 1000)')
+
     args = parser.parse_args()
 
     if args.command == 'init':
@@ -1453,6 +1687,12 @@ Examples:
         checkout_branch(
             ref_name=args.ref_name,
             prolly_dir=args.dir
+        )
+    elif args.command == 'push':
+        push_to_s3(
+            prolly_dir=args.dir,
+            base_commit=args.base_commit,
+            cache_size=args.cache_size
         )
     else:
         parser.print_help()
