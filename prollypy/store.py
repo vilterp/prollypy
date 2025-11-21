@@ -127,7 +127,8 @@ class S3BlockStore:
     def put_node(self, node_hash: bytes, node: Node):
         """Store a node to S3."""
         data = pickle.dumps(node)
-        key = f"{self.prefix}{node_hash.hex()}"
+        hash_hex = node_hash.hex()
+        key = f"{self.prefix}{hash_hex[:2]}/{hash_hex[2:]}"
 
         self.s3.put_object(
             Bucket=self.bucket,

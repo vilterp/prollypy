@@ -1488,8 +1488,8 @@ Configuration:
                         help='Cache size for cached stores (default: 1000)')
     push_parser.add_argument('--remote', default='origin',
                         help='Remote name to push to (default: origin)')
-    push_parser.add_argument('--threads', type=int, default=10,
-                        help='Number of parallel upload threads (default: 10)')
+    push_parser.add_argument('--threads', type=int, default=50,
+                        help='Number of parallel upload threads (default: 50)')
 
     args = parser.parse_args()
 

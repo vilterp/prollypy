@@ -443,7 +443,7 @@ class Repo:
         self,
         remote: BlockStore,
         base_commit: Optional[bytes] = None,
-        threads: int = 10
+        threads: int = 50
     ) -> Tuple[int, Iterator[bytes]]:
         """
         Push nodes to a remote store.
