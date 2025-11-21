@@ -116,8 +116,8 @@ class LocalCommitGraphStore(CommitGraphStore, CheckoutStore, Protocol):
     pass
 
 
-class MemoryCommitGraphStore:
-    """In-memory implementation of CommitGraphStore."""
+class MemoryCommitGraphStore(LocalCommitGraphStore):
+    """In-memory implementation of LocalCommitGraphStore."""
 
     def __init__(self):
         self.commits: Dict[bytes, Commit] = {}
@@ -168,8 +168,8 @@ class MemoryCommitGraphStore:
         return matches[0] if len(matches) == 1 else None
 
 
-class SqliteCommitGraphStore:
-    """SQLite-based implementation of CommitGraphStore."""
+class SqliteCommitGraphStore(LocalCommitGraphStore):
+    """SQLite-based implementation of LocalCommitGraphStore."""
 
     def __init__(self, db_path: str):
         """
