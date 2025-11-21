@@ -1,10 +1,9 @@
-package main
+package prollycore
 
 import (
 	"database/sql"
 	"strings"
 
-	prolly "github.com/vilterp/go-prolly/prolly-core"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -53,7 +52,7 @@ func NewSqliteCommitGraphStore(dbPath string) (*SqliteCommitGraphStore, error) {
 	return &SqliteCommitGraphStore{db: db}, nil
 }
 
-func (s *SqliteCommitGraphStore) PutCommit(hash prolly.Hash, commit prolly.Commit) {
+func (s *SqliteCommitGraphStore) PutCommit(hash Hash, commit Commit) {
 	_, err := s.db.Exec(
 		`INSERT OR REPLACE INTO commits (hash, tree_root, message, timestamp, author, pattern, seed)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -75,8 +74,8 @@ func (s *SqliteCommitGraphStore) PutCommit(hash prolly.Hash, commit prolly.Commi
 	}
 }
 
-func (s *SqliteCommitGraphStore) GetCommit(hash prolly.Hash) *prolly.Commit {
-	var commit prolly.Commit
+func (s *SqliteCommitGraphStore) GetCommit(hash Hash) *Commit {
+	var commit Commit
 	var treeRoot []byte
 
 	err := s.db.QueryRow(
@@ -86,7 +85,7 @@ func (s *SqliteCommitGraphStore) GetCommit(hash prolly.Hash) *prolly.Commit {
 	if err != nil {
 		return nil
 	}
-	commit.TreeRoot = prolly.HashFromBytes(treeRoot)
+	commit.TreeRoot = HashFromBytes(treeRoot)
 
 	// Get parents
 	rows, err := s.db.Query(
@@ -101,13 +100,13 @@ func (s *SqliteCommitGraphStore) GetCommit(hash prolly.Hash) *prolly.Commit {
 	for rows.Next() {
 		var parent []byte
 		rows.Scan(&parent)
-		commit.Parents = append(commit.Parents, prolly.HashFromBytes(parent))
+		commit.Parents = append(commit.Parents, HashFromBytes(parent))
 	}
 
 	return &commit
 }
 
-func (s *SqliteCommitGraphStore) GetParents(hash prolly.Hash) []prolly.Hash {
+func (s *SqliteCommitGraphStore) GetParents(hash Hash) []Hash {
 	commit := s.GetCommit(hash)
 	if commit == nil {
 		return nil
@@ -115,25 +114,25 @@ func (s *SqliteCommitGraphStore) GetParents(hash prolly.Hash) []prolly.Hash {
 	return commit.Parents
 }
 
-func (s *SqliteCommitGraphStore) SetRef(name string, hash prolly.Hash) {
+func (s *SqliteCommitGraphStore) SetRef(name string, hash Hash) {
 	s.db.Exec(
 		`INSERT OR REPLACE INTO refs (name, commit_hash) VALUES (?, ?)`,
 		name, hash[:],
 	)
 }
 
-func (s *SqliteCommitGraphStore) GetRef(name string) *prolly.Hash {
+func (s *SqliteCommitGraphStore) GetRef(name string) *Hash {
 	var hashBytes []byte
 	err := s.db.QueryRow(`SELECT commit_hash FROM refs WHERE name = ?`, name).Scan(&hashBytes)
 	if err != nil {
 		return nil
 	}
-	hash := prolly.HashFromBytes(hashBytes)
+	hash := HashFromBytes(hashBytes)
 	return &hash
 }
 
-func (s *SqliteCommitGraphStore) ListRefs() map[string]prolly.Hash {
-	result := make(map[string]prolly.Hash)
+func (s *SqliteCommitGraphStore) ListRefs() map[string]Hash {
+	result := make(map[string]Hash)
 	rows, err := s.db.Query(`SELECT name, commit_hash FROM refs`)
 	if err != nil {
 		return result
@@ -144,7 +143,7 @@ func (s *SqliteCommitGraphStore) ListRefs() map[string]prolly.Hash {
 		var name string
 		var hashBytes []byte
 		rows.Scan(&name, &hashBytes)
-		result[name] = prolly.HashFromBytes(hashBytes)
+		result[name] = HashFromBytes(hashBytes)
 	}
 	return result
 }
@@ -159,7 +158,7 @@ func (s *SqliteCommitGraphStore) GetHead() string {
 	return head
 }
 
-func (s *SqliteCommitGraphStore) FindCommitByPrefix(prefix string) *prolly.Hash {
+func (s *SqliteCommitGraphStore) FindCommitByPrefix(prefix string) *Hash {
 	rows, err := s.db.Query(`SELECT hash FROM commits`)
 	if err != nil {
 		return nil
@@ -169,7 +168,7 @@ func (s *SqliteCommitGraphStore) FindCommitByPrefix(prefix string) *prolly.Hash 
 	for rows.Next() {
 		var hashBytes []byte
 		rows.Scan(&hashBytes)
-		hash := prolly.HashFromBytes(hashBytes)
+		hash := HashFromBytes(hashBytes)
 		if strings.HasPrefix(hash.Hex(), prefix) {
 			return &hash
 		}
@@ -177,8 +176,8 @@ func (s *SqliteCommitGraphStore) FindCommitByPrefix(prefix string) *prolly.Hash 
 	return nil
 }
 
-func (s *SqliteCommitGraphStore) ListCommits() []prolly.Hash {
-	var result []prolly.Hash
+func (s *SqliteCommitGraphStore) ListCommits() []Hash {
+	var result []Hash
 	rows, err := s.db.Query(`SELECT hash FROM commits`)
 	if err != nil {
 		return result
@@ -188,11 +187,12 @@ func (s *SqliteCommitGraphStore) ListCommits() []prolly.Hash {
 	for rows.Next() {
 		var hashBytes []byte
 		rows.Scan(&hashBytes)
-		result = append(result, prolly.HashFromBytes(hashBytes))
+		result = append(result, HashFromBytes(hashBytes))
 	}
 	return result
 }
 
+// Close closes the database connection
 func (s *SqliteCommitGraphStore) Close() error {
 	return s.db.Close()
 }

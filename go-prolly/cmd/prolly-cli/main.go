@@ -59,7 +59,7 @@ func openRepo() (*prolly.Repo, error) {
 		return nil, err
 	}
 
-	commitStore, err := NewSqliteCommitGraphStore(commitsPath)
+	commitStore, err := prolly.NewSqliteCommitGraphStore(commitsPath)
 	if err != nil {
 		return nil, err
 	}
@@ -87,7 +87,7 @@ func initCmd() *cobra.Command {
 				return err
 			}
 
-			commitStore, err := NewSqliteCommitGraphStore(commitsPath)
+			commitStore, err := prolly.NewSqliteCommitGraphStore(commitsPath)
 			if err != nil {
 				return err
 			}
