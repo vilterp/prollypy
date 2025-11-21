@@ -10,9 +10,15 @@ import heapq
 from typing import Optional, List, Dict, Tuple, Iterator, Set
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from .store import BlockStore
+from .store import BlockStore, Remote
 from .commit_graph_store import Commit, CommitGraphStore
 from .commonality import collect_node_hashes
+
+
+# Type alias for stores that implement both BlockStore and Remote
+class RemoteBlockStore(BlockStore, Remote):
+    """Type alias for stores that implement both BlockStore and Remote protocols."""
+    pass
 
 
 class Repo:
@@ -441,25 +447,40 @@ class Repo:
 
     def push(
         self,
-        remote: BlockStore,
-        base_commit: Optional[bytes] = None,
+        remote,  # Should implement both BlockStore and Remote
         threads: int = 50
     ) -> Tuple[int, Iterator[bytes]]:
         """
         Push nodes to a remote store.
+
+        Automatically determines which nodes to push by checking the remote's
+        ref for the current branch. After pushing, updates the remote's ref.
 
         Returns a tuple of (total_count, iterator) where the iterator yields
         each node hash as it's successfully pushed. This allows the caller
         to render a progress bar.
 
         Args:
-            remote: Remote block store to push nodes to
-            base_commit: Hash of last commit already in remote (optional)
-            threads: Number of parallel upload threads (default: 10)
+            remote: Remote block store to push nodes to (must implement BlockStore and Remote)
+            threads: Number of parallel upload threads (default: 50)
 
         Returns:
             Tuple of (total_nodes_to_push, iterator_of_pushed_hashes)
         """
+        # Get current branch and HEAD commit
+        head_commit, ref_name = self.get_head()
+        if head_commit is None:
+            return (0, iter([]))
+
+        head_hash = head_commit.compute_hash()
+
+        # Check what commit this branch is at on the remote
+        remote_commit_hex = remote.get_ref_commit(ref_name)
+        if remote_commit_hex:
+            base_commit = bytes.fromhex(remote_commit_hex)
+        else:
+            base_commit = None
+
         # Get nodes to push
         nodes_to_push = self.get_nodes_to_push(base_commit)
         total = len(nodes_to_push)
@@ -474,5 +495,8 @@ class Repo:
             with ThreadPoolExecutor(max_workers=threads) as executor:
                 for node_hash in executor.map(push_one, nodes_to_push):
                     yield node_hash
+
+            # After all nodes are pushed, update the remote's ref
+            remote.set_ref_commit(ref_name, head_hash.hex())
 
         return (total, push_generator())

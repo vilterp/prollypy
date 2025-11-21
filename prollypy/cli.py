@@ -1022,20 +1022,19 @@ def checkout_branch(ref_name: str, prolly_dir: str = '.prolly'):
         print(f"Error: {e}")
 
 
-def push_to_remote(prolly_dir: str = '.prolly', base_commit: Optional[str] = None,
-                   cache_size: int = 1000, remote_name: str = 'origin', threads: int = 10):
+def push_to_remote(prolly_dir: str = '.prolly', cache_size: int = 1000,
+                   remote_name: str = 'origin', threads: int = 50):
     """
     Push nodes to a remote.
 
-    Pushes all nodes reachable from HEAD but not from base_commit.
-    If base_commit is None, pushes all nodes from HEAD to initial commit(s).
+    Automatically determines which nodes to push by checking what commit
+    the current branch is at on the remote.
 
     Args:
         prolly_dir: Repository directory
-        base_commit: Last commit already in remote (optional)
         cache_size: Cache size for cached stores
         remote_name: Name of remote to push to (default: origin)
-        threads: Number of parallel upload threads (default: 10)
+        threads: Number of parallel upload threads (default: 50)
     """
     if not HAS_TQDM:
         print("Error: tqdm is required for progress bar. Install with: pip install tqdm")
@@ -1074,19 +1073,17 @@ region = "us-east-1"  # optional, defaults to us-east-1
     head_hash = head_commit.compute_hash()
     print(f"HEAD: {head_hash.hex()[:8]} ({ref_name})")
 
-    # Resolve base commit if provided
-    base_hash = None
-    if base_commit:
-        base_hash = repo.resolve_ref(base_commit)
-        if base_hash is None:
-            print(f"Error: Could not resolve base commit '{base_commit}'")
-            return
-        print(f"Base commit: {base_hash.hex()[:8]}")
+    # Check what commit this branch is at on the remote
+    remote_commit = remote.get_ref_commit(ref_name)
+    if remote_commit:
+        print(f"Remote {ref_name}: {remote_commit[:8]}")
+    else:
+        print(f"Remote {ref_name}: (not found, will push all)")
 
     # Push using repo method
     print(f"\nPushing to {remote.url()} ({threads} threads)")
     try:
-        total, push_iter = repo.push(remote, base_commit=base_hash, threads=threads)
+        total, push_iter = repo.push(remote, threads=threads)
     except ValueError as e:
         print(f"Error: {e}")
         return
@@ -1107,6 +1104,7 @@ region = "us-east-1"  # optional, defaults to us-east-1
     print("PUSH COMPLETE")
     print(f"{'='*60}")
     print(f"Nodes pushed: {pushed}/{total}")
+    print(f"Updated {ref_name} to {head_hash.hex()[:8]}")
 
 
 def main():
@@ -1457,17 +1455,14 @@ Examples:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
-  # Push all nodes from all commits
+  # Push to default remote (origin)
   python cli.py push
-
-  # Push only nodes new since a specific commit
-  python cli.py push abc123
 
   # Push to a specific remote
   python cli.py push --remote backup
 
   # Push with more threads
-  python cli.py push --threads 20
+  python cli.py push --threads 100
 
 Configuration:
   Create .prolly/config.toml with:
@@ -1480,8 +1475,6 @@ Configuration:
   secret_access_key = "YOUR_SECRET_KEY"
   region = "us-east-1"
         ''')
-    push_parser.add_argument('base_commit', nargs='?', default=None,
-                        help='Last commit already in remote (optional, push only newer nodes)')
     push_parser.add_argument('--dir', default='.prolly',
                         help='Repository directory (default: .prolly)')
     push_parser.add_argument('--cache-size', type=int, default=1000,
@@ -1589,7 +1582,6 @@ Configuration:
     elif args.command == 'push':
         push_to_remote(
             prolly_dir=args.dir,
-            base_commit=args.base_commit,
             cache_size=args.cache_size,
             remote_name=args.remote,
             threads=args.threads
