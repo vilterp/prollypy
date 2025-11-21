@@ -9,21 +9,13 @@ import sqlite3
 import time
 import os
 import getpass
-import pickle
 from datetime import datetime
-from typing import Optional, List, Set
+from typing import Optional, List
 
 try:
     import tomllib
 except ImportError:
     import tomli as tomllib
-
-try:
-    import boto3
-    from botocore.exceptions import ClientError
-    HAS_BOTO3 = True
-except ImportError:
-    HAS_BOTO3 = False
 
 try:
     from tqdm import tqdm
@@ -1048,10 +1040,6 @@ def push_to_s3(prolly_dir: str = '.prolly', base_commit: Optional[str] = None,
         base_commit: Last commit already in S3 (optional)
         cache_size: Cache size for cached stores
     """
-    if not HAS_BOTO3:
-        print("Error: boto3 is required for S3 push. Install with: pip install boto3")
-        return
-
     if not HAS_TQDM:
         print("Error: tqdm is required for progress bar. Install with: pip install tqdm")
         return
@@ -1109,72 +1097,37 @@ region = "us-east-1"  # optional, defaults to us-east-1
             return
         print(f"Base commit: {base_hash.hex()[:8]}")
 
-    # Get nodes to push using repo method
-    print("\nCollecting nodes...")
+    # Push using repo method
+    print(f"\nPushing to s3://{bucket}/{prefix}")
     try:
-        nodes_to_push = repo.get_nodes_to_push(base_hash)
+        total, push_iter = repo.push(
+            bucket=bucket,
+            prefix=prefix,
+            access_key=access_key,
+            secret_key=secret_key,
+            region=region,
+            base_commit=base_hash
+        )
     except ValueError as e:
         print(f"Error: {e}")
         return
 
-    print(f"Nodes to push: {len(nodes_to_push)}")
-
-    if len(nodes_to_push) == 0:
+    if total == 0:
         print("Nothing to push!")
         return
 
-    # Create S3 client
-    s3 = boto3.client(
-        's3',
-        aws_access_key_id=access_key,
-        aws_secret_access_key=secret_key,
-        region_name=region
-    )
+    print(f"Nodes to push: {total}")
 
-    # Push nodes with progress bar
-    print(f"\nPushing to s3://{bucket}/{prefix}")
-
-    total_bytes = 0
-    errors = []
-
-    for node_hash in tqdm(nodes_to_push, desc="Pushing", unit="node"):
-        node = repo.block_store.get_node(node_hash)
-        if node is None:
-            errors.append(f"Node not found: {node_hash.hex()}")
-            continue
-
-        # Serialize node
-        data = pickle.dumps(node)
-        total_bytes += len(data)
-
-        # Upload to S3
-        key = f"{prefix}{node_hash.hex()}"
-        try:
-            s3.put_object(
-                Bucket=bucket,
-                Key=key,
-                Body=data
-            )
-        except ClientError as e:
-            errors.append(f"Failed to upload {node_hash.hex()[:8]}: {e}")
+    # Iterate with progress bar
+    pushed = 0
+    for node_hash in tqdm(push_iter, total=total, desc="Pushing", unit="node"):
+        pushed += 1
 
     # Summary
     print(f"\n{'='*60}")
     print("PUSH COMPLETE")
     print(f"{'='*60}")
-    print(f"Nodes pushed: {len(nodes_to_push)}")
-    print(f"Total bytes: {total_bytes:,}")
-    if total_bytes > 1024 * 1024:
-        print(f"Total size: {total_bytes / (1024 * 1024):.2f} MB")
-    elif total_bytes > 1024:
-        print(f"Total size: {total_bytes / 1024:.2f} KB")
-
-    if errors:
-        print(f"\nErrors ({len(errors)}):")
-        for err in errors[:10]:
-            print(f"  - {err}")
-        if len(errors) > 10:
-            print(f"  ... and {len(errors) - 10} more")
+    print(f"Nodes pushed: {pushed}/{total}")
 
 
 def main():

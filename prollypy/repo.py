@@ -7,7 +7,12 @@ Includes commit tracking, branching, and reference management.
 
 import time
 import heapq
+import pickle
 from typing import Optional, List, Dict, Tuple, Iterator, Set
+
+import boto3
+from botocore.exceptions import ClientError
+
 from .store import BlockStore
 from .commit_graph_store import Commit, CommitGraphStore
 from .commonality import collect_node_hashes
@@ -436,3 +441,65 @@ class Repo:
             return new_nodes - base_nodes
 
         return new_nodes
+
+    def push(
+        self,
+        bucket: str,
+        prefix: str,
+        access_key: str,
+        secret_key: str,
+        region: str = 'us-east-1',
+        base_commit: Optional[bytes] = None
+    ) -> Tuple[int, Iterator[bytes]]:
+        """
+        Push nodes to S3.
+
+        Returns a tuple of (total_count, iterator) where the iterator yields
+        each node hash as it's successfully pushed. This allows the caller
+        to render a progress bar.
+
+        Args:
+            bucket: S3 bucket name
+            prefix: Key prefix for all blobs
+            access_key: AWS access key ID
+            secret_key: AWS secret access key
+            region: AWS region (default: us-east-1)
+            base_commit: Hash of last commit already in remote (optional)
+
+        Returns:
+            Tuple of (total_nodes_to_push, iterator_of_pushed_hashes)
+        """
+        # Get nodes to push
+        nodes_to_push = self.get_nodes_to_push(base_commit)
+        total = len(nodes_to_push)
+
+        def push_generator() -> Iterator[bytes]:
+            # Create S3 client
+            s3 = boto3.client(
+                's3',
+                aws_access_key_id=access_key,
+                aws_secret_access_key=secret_key,
+                region_name=region
+            )
+
+            for node_hash in nodes_to_push:
+                node = self.block_store.get_node(node_hash)
+                if node is None:
+                    continue
+
+                # Serialize and upload
+                data = pickle.dumps(node)
+                key = f"{prefix}{node_hash.hex()}"
+
+                try:
+                    s3.put_object(
+                        Bucket=bucket,
+                        Key=key,
+                        Body=data
+                    )
+                    yield node_hash
+                except ClientError:
+                    # Skip failed uploads, caller can check count
+                    pass
+
+        return (total, push_generator())
