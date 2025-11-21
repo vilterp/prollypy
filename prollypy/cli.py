@@ -36,7 +36,7 @@ from .store import create_store_from_spec, CachedFSBlockStore, BlockStore
 from .diff import Differ, Added, Deleted, Modified
 from .db_diff import diff_db, DBDiff, TableDiff
 from .sqlite_import import import_sqlite_database, import_sqlite_table, validate_tree_sorted
-from .commonality import compute_commonality, print_commonality_report, collect_node_hashes
+from .commonality import compute_commonality, print_commonality_report
 from .store_gc import garbage_collect, find_garbage_nodes, GCStats
 from .tree import ProllyTree
 from .repo import Repo
@@ -1100,66 +1100,24 @@ region = "us-east-1"  # optional, defaults to us-east-1
     head_hash = head_commit.compute_hash()
     print(f"HEAD: {head_hash.hex()[:8]} ({ref_name})")
 
-    # Collect all tree roots from HEAD to base_commit
-    print("\nCollecting commits...")
-
-    # Get all commits reachable from HEAD
-    new_tree_roots: Set[bytes] = set()
-    for commit_hash, commit in repo.log():
-        new_tree_roots.add(commit.tree_root)
-        # If we hit base_commit, stop
-        if base_commit:
-            base_hash = repo.resolve_ref(base_commit)
-            if base_hash and commit_hash == base_hash:
-                # Don't include this commit's tree in new_tree_roots
-                new_tree_roots.discard(commit.tree_root)
-                break
-
-    print(f"Tree roots to push: {len(new_tree_roots)}")
-
-    # Collect all nodes reachable from new tree roots
-    print("Collecting nodes from new commits...")
-    new_nodes: Set[bytes] = set()
-    for tree_root in new_tree_roots:
-        nodes = collect_node_hashes(repo.block_store, tree_root)
-        new_nodes.update(nodes)
-
-    print(f"Nodes reachable from new commits: {len(new_nodes)}")
-
-    # If base_commit specified, subtract nodes reachable from it
+    # Resolve base commit if provided
+    base_hash = None
     if base_commit:
         base_hash = repo.resolve_ref(base_commit)
         if base_hash is None:
             print(f"Error: Could not resolve base commit '{base_commit}'")
             return
-
-        base_commit_obj = repo.get_commit(base_hash)
-        if base_commit_obj is None:
-            print(f"Error: Base commit not found: {base_hash.hex()}")
-            return
-
         print(f"Base commit: {base_hash.hex()[:8]}")
 
-        # Collect all tree roots reachable from base_commit
-        base_tree_roots: Set[bytes] = set()
-        for commit_hash, commit in repo.log(start_ref=base_commit):
-            base_tree_roots.add(commit.tree_root)
+    # Get nodes to push using repo method
+    print("\nCollecting nodes...")
+    try:
+        nodes_to_push = repo.get_nodes_to_push(base_hash)
+    except ValueError as e:
+        print(f"Error: {e}")
+        return
 
-        # Collect all nodes reachable from base
-        print("Collecting nodes from base commit...")
-        base_nodes: Set[bytes] = set()
-        for tree_root in base_tree_roots:
-            nodes = collect_node_hashes(repo.block_store, tree_root)
-            base_nodes.update(nodes)
-
-        print(f"Nodes reachable from base: {len(base_nodes)}")
-
-        # Subtract to get nodes to push
-        nodes_to_push = new_nodes - base_nodes
-    else:
-        nodes_to_push = new_nodes
-
-    print(f"\nNodes to push: {len(nodes_to_push)}")
+    print(f"Nodes to push: {len(nodes_to_push)}")
 
     if len(nodes_to_push) == 0:
         print("Nothing to push!")
