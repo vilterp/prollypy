@@ -10,8 +10,9 @@ import argparse
 import os
 import random
 import string
+import subprocess
 import time
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 from prollypy.tree import ProllyTree
 from prollypy.store import MemoryBlockStore, FileSystemBlockStore, CachedFSBlockStore
@@ -42,6 +43,103 @@ def generate_random_kv_pairs(count: int, key_length: int = 20, value_length: int
     # ProllyTree requires sorted mutations
     pairs.sort()
     return pairs
+
+
+def get_git_info() -> dict:
+    """Get current git commit hash and ref.
+
+    Returns:
+        Dictionary with 'commit' and 'ref' keys
+    """
+    try:
+        commit = subprocess.check_output(
+            ['git', 'rev-parse', 'HEAD'],
+            stderr=subprocess.DEVNULL
+        ).decode('utf-8').strip()
+    except Exception:
+        commit = 'unknown'
+
+    try:
+        ref = subprocess.check_output(
+            ['git', 'symbolic-ref', '--short', 'HEAD'],
+            stderr=subprocess.DEVNULL
+        ).decode('utf-8').strip()
+    except Exception:
+        # If not on a branch, try to get tag or just use HEAD
+        try:
+            ref = subprocess.check_output(
+                ['git', 'describe', '--tags', '--exact-match'],
+                stderr=subprocess.DEVNULL
+            ).decode('utf-8').strip()
+        except Exception:
+            ref = 'detached'
+
+    return {'commit': commit, 'ref': ref}
+
+
+def post_to_airtable(results: dict, base_id: Optional[str] = None, table_name: Optional[str] = None, api_key: Optional[str] = None):
+    """Post benchmark results to Airtable.
+
+    Args:
+        results: Dictionary of benchmark results
+        base_id: Airtable base ID (defaults to AIRTABLE_BASE_ID env var)
+        table_name: Airtable table name (defaults to AIRTABLE_TABLE_NAME env var)
+        api_key: Airtable API key (defaults to AIRTABLE_API_KEY env var)
+    """
+    try:
+        from pyairtable import Api
+    except ImportError:
+        print("Warning: pyairtable not installed. Skipping Airtable upload.")
+        print("Install with: pip install pyairtable")
+        return
+
+    # Get credentials from environment variables if not provided
+    base_id = base_id or os.environ.get('AIRTABLE_BASE_ID')
+    table_name = table_name or os.environ.get('AIRTABLE_TABLE_NAME', 'Benchmarks')
+    api_key = api_key or os.environ.get('AIRTABLE_API_KEY')
+
+    if not base_id or not api_key:
+        print("Warning: AIRTABLE_BASE_ID and AIRTABLE_API_KEY environment variables must be set.")
+        print("Skipping Airtable upload.")
+        return
+
+    # Get git info
+    git_info = get_git_info()
+
+    # Prepare record for Airtable
+    stats = results.get('stats', {})
+    record = {
+        'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+        'commit': git_info['commit'],
+        'ref': git_info['ref'],
+        'num_pairs': results['num_pairs'],
+        'key_length': results['key_length'],
+        'value_length': results['value_length'],
+        'pattern': results['pattern'],
+        'seed': results['seed'],
+        'store_type': results['store_type'],
+        'batch_size': results.get('batch_size', 0),
+        'sort_mode': 'global' if results.get('sort_globally', True) else 'per-batch',
+        'validate': results.get('validate', False),
+        'generation_time_sec': round(results['generation_time'], 2),
+        'insertion_time_sec': round(results['insertion_time'], 2),
+        'total_time_sec': round(results['total_time'], 2),
+        'throughput_pairs_per_sec': round(results['throughput'], 0),
+        'nodes_created': stats.get('nodes_created', 0),
+        'leaves_created': stats.get('leaves_created', 0),
+        'internals_created': stats.get('internals_created', 0),
+        'nodes_reused': stats.get('nodes_reused', 0),
+        'disk_size_bytes': results.get('disk_size_bytes', 0),
+        'disk_size_mb': round(results.get('disk_size_bytes', 0) / (1024 * 1024), 2),
+    }
+
+    try:
+        api = Api(api_key)
+        table = api.table(base_id, table_name)
+        created_record = table.create(record)
+        print(f"\nSuccessfully posted results to Airtable (record ID: {created_record['id']})")
+    except Exception as e:
+        print(f"\nError posting to Airtable: {e}")
 
 
 def benchmark_insertion(
@@ -329,6 +427,11 @@ def main():
         action="store_true",
         help="Run comparison across different patterns"
     )
+    parser.add_argument(
+        "--post-to-airtable",
+        action="store_true",
+        help="Post results to Airtable (requires AIRTABLE_BASE_ID and AIRTABLE_API_KEY env vars)"
+    )
 
     args = parser.parse_args()
 
@@ -371,6 +474,12 @@ def main():
                 f"{res['stats'].get('leaves_created', 0):>6,}"
             )
         print("=" * 90)
+
+        # Post all results to Airtable if requested
+        if args.post_to_airtable:
+            print("\nPosting comparison results to Airtable...")
+            for res in all_results:
+                post_to_airtable(res)
     else:
         # Run single benchmark
         results = benchmark_insertion(
@@ -388,6 +497,10 @@ def main():
             sort_globally=args.sort_globally
         )
         print_results(results)
+
+        # Post to Airtable if requested
+        if args.post_to_airtable:
+            post_to_airtable(results)
 
 
 if __name__ == "__main__":
