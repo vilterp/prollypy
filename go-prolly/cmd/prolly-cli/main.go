@@ -30,7 +30,7 @@ func main() {
 		Short: "Prolly tree CLI",
 	}
 
-	rootCmd.PersistentFlags().StringVar(&repoPath, "repo", ".", "Repository path")
+	rootCmd.PersistentFlags().StringVar(&repoPath, "repo", ".prolly", "Repository path")
 	rootCmd.PersistentFlags().IntVar(&cacheSize, "cache-size", DefaultCacheSize, "LRU cache size")
 
 	rootCmd.AddCommand(initCmd())
