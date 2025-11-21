@@ -19,7 +19,7 @@ except ImportError:
     HAS_TQDM = False
 
 from .db import DB
-from .store import create_store_from_spec, CachedFSBlockStore, BlockStore, S3RemoteStore
+from .store import create_store_from_spec, CachedFSBlockStore, BlockStore, S3BlockStore
 from .diff import Differ, Added, Deleted, Modified
 from .db_diff import diff_db, DBDiff, TableDiff
 from .sqlite_import import import_sqlite_database, import_sqlite_table, validate_tree_sorted
@@ -1042,7 +1042,7 @@ def push_to_s3(prolly_dir: str = '.prolly', base_commit: Optional[str] = None,
     # Load S3 remote store from config
     config_path = os.path.join(prolly_dir, 's3.toml')
     try:
-        remote = S3RemoteStore.from_config(config_path)
+        remote = S3BlockStore.from_config(config_path)
     except FileNotFoundError:
         print(f"Error: S3 config not found at {config_path}")
         print("\nCreate a config file with:")

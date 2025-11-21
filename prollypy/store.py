@@ -46,25 +46,13 @@ class BlockStore(Protocol):
         ...
 
 
-class RemoteStore(Protocol):
-    """Protocol for remote node storage backends (push targets)."""
-
-    def put_node(self, node_hash: bytes, node: Node) -> bool:
-        """
-        Store a node by its hash to remote storage.
-
-        Returns True if successful, False otherwise.
-        """
-        ...
-
-
-class S3RemoteStore:
-    """S3-based remote storage for pushing nodes."""
+class S3BlockStore:
+    """S3-based block storage. Currently only supports put_node for pushing."""
 
     def __init__(self, bucket: str, prefix: str, access_key: str,
                  secret_key: str, region: str = 'us-east-1'):
         """
-        Initialize S3 remote store.
+        Initialize S3 block store.
 
         Args:
             bucket: S3 bucket name
@@ -83,9 +71,9 @@ class S3RemoteStore:
         )
 
     @classmethod
-    def from_config(cls, config_path: str) -> 'S3RemoteStore':
+    def from_config(cls, config_path: str) -> 'S3BlockStore':
         """
-        Create S3RemoteStore from a TOML config file.
+        Create S3BlockStore from a TOML config file.
 
         Config format:
             [s3]
@@ -99,7 +87,7 @@ class S3RemoteStore:
             config_path: Path to TOML config file
 
         Returns:
-            S3RemoteStore instance
+            S3BlockStore instance
 
         Raises:
             FileNotFoundError: If config file doesn't exist
@@ -125,20 +113,32 @@ class S3RemoteStore:
 
         return cls(bucket, prefix, access_key, secret_key, region)
 
-    def put_node(self, node_hash: bytes, node: Node) -> bool:
+    def put_node(self, node_hash: bytes, node: Node):
         """Store a node to S3."""
         data = pickle.dumps(node)
         key = f"{self.prefix}{node_hash.hex()}"
 
-        try:
-            self.s3.put_object(
-                Bucket=self.bucket,
-                Key=key,
-                Body=data
-            )
-            return True
-        except ClientError:
-            return False
+        self.s3.put_object(
+            Bucket=self.bucket,
+            Key=key,
+            Body=data
+        )
+
+    def get_node(self, node_hash: bytes) -> Optional[Node]:
+        """Retrieve a node from S3. Not yet implemented."""
+        raise NotImplementedError("S3BlockStore.get_node not yet implemented")
+
+    def delete_node(self, node_hash: bytes) -> bool:
+        """Delete a node from S3. Not yet implemented."""
+        raise NotImplementedError("S3BlockStore.delete_node not yet implemented")
+
+    def list_nodes(self) -> Iterator[bytes]:
+        """List all nodes in S3. Not yet implemented."""
+        raise NotImplementedError("S3BlockStore.list_nodes not yet implemented")
+
+    def count_nodes(self) -> int:
+        """Count nodes in S3. Not yet implemented."""
+        raise NotImplementedError("S3BlockStore.count_nodes not yet implemented")
 
 
 class MemoryBlockStore:

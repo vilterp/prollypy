@@ -9,7 +9,7 @@ import time
 import heapq
 from typing import Optional, List, Dict, Tuple, Iterator, Set
 
-from .store import BlockStore, RemoteStore
+from .store import BlockStore
 from .commit_graph_store import Commit, CommitGraphStore
 from .commonality import collect_node_hashes
 
@@ -440,7 +440,7 @@ class Repo:
 
     def push(
         self,
-        remote: RemoteStore,
+        remote: BlockStore,
         base_commit: Optional[bytes] = None
     ) -> Tuple[int, Iterator[bytes]]:
         """
@@ -451,7 +451,7 @@ class Repo:
         to render a progress bar.
 
         Args:
-            remote: Remote store to push nodes to
+            remote: Remote block store to push nodes to
             base_commit: Hash of last commit already in remote (optional)
 
         Returns:
@@ -467,7 +467,7 @@ class Repo:
                 if node is None:
                     continue
 
-                if remote.put_node(node_hash, node):
-                    yield node_hash
+                remote.put_node(node_hash, node)
+                yield node_hash
 
         return (total, push_generator())
