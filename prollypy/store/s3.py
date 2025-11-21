@@ -11,10 +11,10 @@ import boto3
 from botocore.exceptions import ClientError
 
 from ..node import Node
-from .protocols import BlockStore, Remote
+from .protocols import Remote
 
 
-class S3BlockStore(BlockStore, Remote):
+class S3BlockStore(Remote):
     """S3-based block storage that implements both BlockStore and Remote protocols."""
 
     def __init__(self, bucket: str, prefix: str, access_key: str,

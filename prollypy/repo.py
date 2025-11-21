@@ -15,12 +15,6 @@ from .commit_graph_store import Commit, CommitGraphStore
 from .commonality import collect_node_hashes
 
 
-# Type alias for stores that implement both BlockStore and Remote
-class RemoteBlockStore(BlockStore, Remote):
-    """Type alias for stores that implement both BlockStore and Remote protocols."""
-    pass
-
-
 class Repo:
     """
     Repository for version-controlled ProllyTrees.
@@ -447,7 +441,7 @@ class Repo:
 
     def push(
         self,
-        remote,  # Should implement both BlockStore and Remote
+        remote: Remote,
         threads: int = 50
     ) -> Tuple[int, Iterator[bytes]]:
         """

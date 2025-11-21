@@ -34,8 +34,8 @@ class BlockStore(Protocol):
         ...
 
 
-class Remote(Protocol):
-    """Protocol for remote storage that tracks refs."""
+class Remote(BlockStore, Protocol):
+    """Protocol for remote storage that tracks refs. Extends BlockStore."""
 
     def list_refs(self) -> List[str]:
         """List all refs on the remote."""
