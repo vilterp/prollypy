@@ -68,12 +68,13 @@ class S3BlockStore:
         )
 
     @classmethod
-    def from_config(cls, config_path: str) -> 'S3BlockStore':
+    def from_config(cls, config_path: str, remote_name: str = 'origin') -> 'S3BlockStore':
         """
         Create S3BlockStore from a TOML config file.
 
         Config format:
-            [s3]
+            [remotes.origin]
+            type = "s3"
             bucket = "your-bucket-name"
             prefix = "prolly/"
             access_key_id = "YOUR_ACCESS_KEY"
@@ -82,6 +83,7 @@ class S3BlockStore:
 
         Args:
             config_path: Path to TOML config file
+            remote_name: Name of the remote to load (default: origin)
 
         Returns:
             S3BlockStore instance
@@ -91,22 +93,30 @@ class S3BlockStore:
             ValueError: If required config fields are missing
         """
         if not os.path.exists(config_path):
-            raise FileNotFoundError(f"S3 config not found at {config_path}")
+            raise FileNotFoundError(f"Config not found at {config_path}")
 
         with open(config_path, 'rb') as f:
             config = tomllib.load(f)
 
-        s3_config = config.get('s3', {})
-        bucket = s3_config.get('bucket')
-        prefix = s3_config.get('prefix', '')
-        access_key = s3_config.get('access_key_id')
-        secret_key = s3_config.get('secret_access_key')
-        region = s3_config.get('region', 'us-east-1')
+        remotes = config.get('remotes', {})
+        if remote_name not in remotes:
+            raise ValueError(f"Remote '{remote_name}' not found in config")
+
+        remote_config = remotes[remote_name]
+        remote_type = remote_config.get('type', 's3')
+        if remote_type != 's3':
+            raise ValueError(f"Remote '{remote_name}' is not an S3 remote (type: {remote_type})")
+
+        bucket = remote_config.get('bucket')
+        prefix = remote_config.get('prefix', '')
+        access_key = remote_config.get('access_key_id')
+        secret_key = remote_config.get('secret_access_key')
+        region = remote_config.get('region', 'us-east-1')
 
         if not bucket:
-            raise ValueError("'bucket' not specified in s3.toml")
+            raise ValueError(f"'bucket' not specified for remote '{remote_name}'")
         if not access_key or not secret_key:
-            raise ValueError("'access_key_id' and 'secret_access_key' required in s3.toml")
+            raise ValueError(f"'access_key_id' and 'secret_access_key' required for remote '{remote_name}'")
 
         return cls(bucket, prefix, access_key, secret_key, region)
 

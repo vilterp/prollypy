@@ -8,6 +8,7 @@ Includes commit tracking, branching, and reference management.
 import time
 import heapq
 from typing import Optional, List, Dict, Tuple, Iterator, Set
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .store import BlockStore
 from .commit_graph_store import Commit, CommitGraphStore
@@ -441,7 +442,8 @@ class Repo:
     def push(
         self,
         remote: BlockStore,
-        base_commit: Optional[bytes] = None
+        base_commit: Optional[bytes] = None,
+        threads: int = 10
     ) -> Tuple[int, Iterator[bytes]]:
         """
         Push nodes to a remote store.
@@ -453,6 +455,7 @@ class Repo:
         Args:
             remote: Remote block store to push nodes to
             base_commit: Hash of last commit already in remote (optional)
+            threads: Number of parallel upload threads (default: 10)
 
         Returns:
             Tuple of (total_nodes_to_push, iterator_of_pushed_hashes)
@@ -461,13 +464,15 @@ class Repo:
         nodes_to_push = self.get_nodes_to_push(base_commit)
         total = len(nodes_to_push)
 
-        def push_generator() -> Iterator[bytes]:
-            for node_hash in nodes_to_push:
-                node = self.block_store.get_node(node_hash)
-                if node is None:
-                    continue
-
+        def push_one(node_hash: bytes) -> bytes:
+            node = self.block_store.get_node(node_hash)
+            if node is not None:
                 remote.put_node(node_hash, node)
-                yield node_hash
+            return node_hash
+
+        def push_generator() -> Iterator[bytes]:
+            with ThreadPoolExecutor(max_workers=threads) as executor:
+                for node_hash in executor.map(push_one, nodes_to_push):
+                    yield node_hash
 
         return (total, push_generator())

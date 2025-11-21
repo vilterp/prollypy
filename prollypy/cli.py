@@ -1022,32 +1022,35 @@ def checkout_branch(ref_name: str, prolly_dir: str = '.prolly'):
         print(f"Error: {e}")
 
 
-def push_to_s3(prolly_dir: str = '.prolly', base_commit: Optional[str] = None,
-               cache_size: int = 1000):
+def push_to_remote(prolly_dir: str = '.prolly', base_commit: Optional[str] = None,
+                   cache_size: int = 1000, remote_name: str = 'origin', threads: int = 10):
     """
-    Push nodes to S3.
+    Push nodes to a remote.
 
     Pushes all nodes reachable from HEAD but not from base_commit.
     If base_commit is None, pushes all nodes from HEAD to initial commit(s).
 
     Args:
         prolly_dir: Repository directory
-        base_commit: Last commit already in S3 (optional)
+        base_commit: Last commit already in remote (optional)
         cache_size: Cache size for cached stores
+        remote_name: Name of remote to push to (default: origin)
+        threads: Number of parallel upload threads (default: 10)
     """
     if not HAS_TQDM:
         print("Error: tqdm is required for progress bar. Install with: pip install tqdm")
         return
 
-    # Load S3 remote store from config
-    config_path = os.path.join(prolly_dir, 's3.toml')
+    # Load remote store from config
+    config_path = os.path.join(prolly_dir, 'config.toml')
     try:
-        remote = S3BlockStore.from_config(config_path)
+        remote = S3BlockStore.from_config(config_path, remote_name)
     except FileNotFoundError:
-        print(f"Error: S3 config not found at {config_path}")
+        print(f"Error: Config not found at {config_path}")
         print("\nCreate a config file with:")
         print("""
-[s3]
+[remotes.origin]
+type = "s3"
 bucket = "your-bucket-name"
 prefix = "prolly/"  # optional prefix for all blobs
 access_key_id = "YOUR_ACCESS_KEY"
@@ -1081,9 +1084,9 @@ region = "us-east-1"  # optional, defaults to us-east-1
         print(f"Base commit: {base_hash.hex()[:8]}")
 
     # Push using repo method
-    print(f"\nPushing to s3://{remote.bucket}/{remote.prefix}")
+    print(f"\nPushing to s3://{remote.bucket}/{remote.prefix} ({threads} threads)")
     try:
-        total, push_iter = repo.push(remote, base_commit=base_hash)
+        total, push_iter = repo.push(remote, base_commit=base_hash, threads=threads)
     except ValueError as e:
         print(f"Error: {e}")
         return
@@ -1450,7 +1453,7 @@ Examples:
                         help='Repository directory (default: .prolly)')
 
     # Push subcommand
-    push_parser = subparsers.add_parser('push', help='Push nodes to S3',
+    push_parser = subparsers.add_parser('push', help='Push nodes to remote',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
@@ -1460,13 +1463,17 @@ Examples:
   # Push only nodes new since a specific commit
   python cli.py push abc123
 
-  # Push using custom repository
-  python cli.py push --dir /path/to/.prolly
+  # Push to a specific remote
+  python cli.py push --remote backup
+
+  # Push with more threads
+  python cli.py push --threads 20
 
 Configuration:
-  Create .prolly/s3.toml with:
+  Create .prolly/config.toml with:
 
-  [s3]
+  [remotes.origin]
+  type = "s3"
   bucket = "your-bucket-name"
   prefix = "prolly/"
   access_key_id = "YOUR_ACCESS_KEY"
@@ -1474,11 +1481,15 @@ Configuration:
   region = "us-east-1"
         ''')
     push_parser.add_argument('base_commit', nargs='?', default=None,
-                        help='Last commit already in S3 (optional, push only newer nodes)')
+                        help='Last commit already in remote (optional, push only newer nodes)')
     push_parser.add_argument('--dir', default='.prolly',
                         help='Repository directory (default: .prolly)')
     push_parser.add_argument('--cache-size', type=int, default=1000,
                         help='Cache size for cached stores (default: 1000)')
+    push_parser.add_argument('--remote', default='origin',
+                        help='Remote name to push to (default: origin)')
+    push_parser.add_argument('--threads', type=int, default=10,
+                        help='Number of parallel upload threads (default: 10)')
 
     args = parser.parse_args()
 
@@ -1576,10 +1587,12 @@ Configuration:
             prolly_dir=args.dir
         )
     elif args.command == 'push':
-        push_to_s3(
+        push_to_remote(
             prolly_dir=args.dir,
             base_commit=args.base_commit,
-            cache_size=args.cache_size
+            cache_size=args.cache_size,
+            remote_name=args.remote,
+            threads=args.threads
         )
     else:
         parser.print_help()
