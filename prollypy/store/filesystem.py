@@ -9,9 +9,10 @@ from collections import OrderedDict
 
 from ..node import Node
 from ..stats import Stats
+from .protocols import BlockStore
 
 
-class FileSystemBlockStore:
+class FileSystemBlockStore(BlockStore):
     """File system-based node storage."""
 
     def __init__(self, base_path: str):
@@ -105,7 +106,7 @@ class FileSystemBlockStore:
         return f"file://{self.base_path}"
 
 
-class CachedFSBlockStore:
+class CachedFSBlockStore(BlockStore):
     """Filesystem storage with LRU cache for frequently accessed nodes."""
 
     def __init__(self, base_path: str, cache_size: int = 1000):

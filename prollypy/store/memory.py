@@ -4,9 +4,10 @@ In-memory storage backend for ProllyTree nodes.
 
 from typing import Optional, Iterator
 from ..node import Node
+from .protocols import BlockStore
 
 
-class MemoryBlockStore:
+class MemoryBlockStore(BlockStore):
     """In-memory node storage using a dictionary."""
 
     def __init__(self):
