@@ -1107,6 +1107,101 @@ region = "us-east-1"  # optional, defaults to us-east-1
     print(f"Updated {ref_name} to {head_hash.hex()[:8]}")
 
 
+def pull_from_remote(prolly_dir: str = '.prolly', cache_size: int = 1000,
+                     remote_name: str = 'origin', threads: int = 50):
+    """
+    Pull nodes from a remote.
+
+    Automatically determines which nodes to pull by checking what commit
+    the current branch is at on the remote.
+
+    Args:
+        prolly_dir: Repository directory
+        cache_size: Cache size for cached stores
+        remote_name: Name of remote to pull from (default: origin)
+        threads: Number of parallel download threads (default: 50)
+    """
+    if not HAS_TQDM:
+        print("Error: tqdm is required for progress bar. Install with: pip install tqdm")
+        return
+
+    # Load remote store from config
+    config_path = os.path.join(prolly_dir, 'config.toml')
+    try:
+        remote = S3BlockStore.from_config(config_path, remote_name)
+    except FileNotFoundError:
+        print(f"Error: Config not found at {config_path}")
+        print("\nCreate a config file with:")
+        print("""
+[remotes.origin]
+type = "s3"
+bucket = "your-bucket-name"
+prefix = "prolly/"  # optional prefix for all blobs
+access_key_id = "YOUR_ACCESS_KEY"
+secret_access_key = "YOUR_SECRET_KEY"
+region = "us-east-1"  # optional, defaults to us-east-1
+""")
+        return
+    except ValueError as e:
+        print(f"Error: {e}")
+        return
+
+    # Open repository
+    repo = _get_repo(prolly_dir, cache_size=cache_size)
+
+    # Get current branch
+    _, ref_name = repo.get_head()
+    local_commit = repo.commit_graph_store.get_ref(ref_name)
+
+    if local_commit:
+        print(f"Local {ref_name}: {local_commit.hex()[:8]}")
+    else:
+        print(f"Local {ref_name}: (not found)")
+
+    # Check what commit this branch is at on the remote
+    remote_commit = remote.get_ref_commit(ref_name)
+    if remote_commit:
+        print(f"Remote {ref_name}: {remote_commit[:8]}")
+    else:
+        print(f"Remote {ref_name}: (not found)")
+        return
+
+    # Check if already up to date
+    if local_commit and local_commit.hex() == remote_commit:
+        print("Already up to date!")
+        return
+
+    # Pull using repo method
+    print(f"\nPulling from {remote.url()} ({threads} threads)")
+    try:
+        total, pull_iter = repo.pull(remote, threads=threads)
+    except ValueError as e:
+        print(f"Error: {e}")
+        return
+
+    if total == 0:
+        print("No nodes to download (commits only)")
+        # Still need to consume the iterator to update refs
+        for _ in pull_iter:
+            pass
+        print(f"Updated {ref_name} to {remote_commit[:8]}")
+        return
+
+    print(f"Nodes to pull: {total}")
+
+    # Iterate with progress bar
+    pulled = 0
+    for node_hash in tqdm(pull_iter, total=total, desc="Pulling", unit="node"):
+        pulled += 1
+
+    # Summary
+    print(f"\n{'='*60}")
+    print("PULL COMPLETE")
+    print(f"{'='*60}")
+    print(f"Nodes pulled: {pulled}/{total}")
+    print(f"Updated {ref_name} to {remote_commit[:8]}")
+
+
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -1484,6 +1579,29 @@ Configuration:
     push_parser.add_argument('--threads', type=int, default=50,
                         help='Number of parallel upload threads (default: 50)')
 
+    # Pull subcommand
+    pull_parser = subparsers.add_parser('pull', help='Pull nodes from remote',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  # Pull from default remote (origin)
+  python cli.py pull
+
+  # Pull from a specific remote
+  python cli.py pull --remote backup
+
+  # Pull with more threads
+  python cli.py pull --threads 100
+        ''')
+    pull_parser.add_argument('--dir', default='.prolly',
+                        help='Repository directory (default: .prolly)')
+    pull_parser.add_argument('--cache-size', type=int, default=1000,
+                        help='Cache size for cached stores (default: 1000)')
+    pull_parser.add_argument('--remote', default='origin',
+                        help='Remote name to pull from (default: origin)')
+    pull_parser.add_argument('--threads', type=int, default=50,
+                        help='Number of parallel download threads (default: 50)')
+
     args = parser.parse_args()
 
     if args.command == 'init':
@@ -1581,6 +1699,13 @@ Configuration:
         )
     elif args.command == 'push':
         push_to_remote(
+            prolly_dir=args.dir,
+            cache_size=args.cache_size,
+            remote_name=args.remote,
+            threads=args.threads
+        )
+    elif args.command == 'pull':
+        pull_from_remote(
             prolly_dir=args.dir,
             cache_size=args.cache_size,
             remote_name=args.remote,

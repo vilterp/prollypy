@@ -59,6 +59,18 @@ class Commit:
         return hashlib.sha256(serialized).digest()
 
 
+class CheckoutStore(Protocol):
+    """Protocol for HEAD management (checkout operations)."""
+
+    def set_head(self, ref_name: str) -> None:
+        """Set HEAD to point to a branch name."""
+        ...
+
+    def get_head(self) -> Optional[str]:
+        """Get the branch name that HEAD points to. Returns None if not set."""
+        ...
+
+
 class CommitGraphStore(Protocol):
     """Protocol for storing commits and references."""
 
@@ -84,14 +96,6 @@ class CommitGraphStore(Protocol):
 
     def list_refs(self) -> Dict[str, bytes]:
         """List all references and their commit hashes."""
-        ...
-
-    def set_head(self, ref_name: str) -> None:
-        """Set HEAD to point to a branch name."""
-        ...
-
-    def get_head(self) -> Optional[str]:
-        """Get the branch name that HEAD points to. Returns None if not set."""
         ...
 
     def find_commit_by_prefix(self, prefix: str) -> Optional[bytes]:
