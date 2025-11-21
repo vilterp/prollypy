@@ -13,6 +13,14 @@ from collections import OrderedDict
 from .stats import Stats
 from .node import Node
 
+import boto3
+from botocore.exceptions import ClientError
+
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
+
 
 class BlockStore(Protocol):
     """Protocol for node storage backends."""
@@ -36,6 +44,101 @@ class BlockStore(Protocol):
     def count_nodes(self) -> int:
         """Return the total number of nodes in storage."""
         ...
+
+
+class RemoteStore(Protocol):
+    """Protocol for remote node storage backends (push targets)."""
+
+    def put_node(self, node_hash: bytes, node: Node) -> bool:
+        """
+        Store a node by its hash to remote storage.
+
+        Returns True if successful, False otherwise.
+        """
+        ...
+
+
+class S3RemoteStore:
+    """S3-based remote storage for pushing nodes."""
+
+    def __init__(self, bucket: str, prefix: str, access_key: str,
+                 secret_key: str, region: str = 'us-east-1'):
+        """
+        Initialize S3 remote store.
+
+        Args:
+            bucket: S3 bucket name
+            prefix: Key prefix for all blobs
+            access_key: AWS access key ID
+            secret_key: AWS secret access key
+            region: AWS region (default: us-east-1)
+        """
+        self.bucket = bucket
+        self.prefix = prefix
+        self.s3 = boto3.client(
+            's3',
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            region_name=region
+        )
+
+    @classmethod
+    def from_config(cls, config_path: str) -> 'S3RemoteStore':
+        """
+        Create S3RemoteStore from a TOML config file.
+
+        Config format:
+            [s3]
+            bucket = "your-bucket-name"
+            prefix = "prolly/"
+            access_key_id = "YOUR_ACCESS_KEY"
+            secret_access_key = "YOUR_SECRET_KEY"
+            region = "us-east-1"
+
+        Args:
+            config_path: Path to TOML config file
+
+        Returns:
+            S3RemoteStore instance
+
+        Raises:
+            FileNotFoundError: If config file doesn't exist
+            ValueError: If required config fields are missing
+        """
+        if not os.path.exists(config_path):
+            raise FileNotFoundError(f"S3 config not found at {config_path}")
+
+        with open(config_path, 'rb') as f:
+            config = tomllib.load(f)
+
+        s3_config = config.get('s3', {})
+        bucket = s3_config.get('bucket')
+        prefix = s3_config.get('prefix', '')
+        access_key = s3_config.get('access_key_id')
+        secret_key = s3_config.get('secret_access_key')
+        region = s3_config.get('region', 'us-east-1')
+
+        if not bucket:
+            raise ValueError("'bucket' not specified in s3.toml")
+        if not access_key or not secret_key:
+            raise ValueError("'access_key_id' and 'secret_access_key' required in s3.toml")
+
+        return cls(bucket, prefix, access_key, secret_key, region)
+
+    def put_node(self, node_hash: bytes, node: Node) -> bool:
+        """Store a node to S3."""
+        data = pickle.dumps(node)
+        key = f"{self.prefix}{node_hash.hex()}"
+
+        try:
+            self.s3.put_object(
+                Bucket=self.bucket,
+                Key=key,
+                Body=data
+            )
+            return True
+        except ClientError:
+            return False
 
 
 class MemoryBlockStore:

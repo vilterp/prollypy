@@ -13,18 +13,13 @@ from datetime import datetime
 from typing import Optional, List
 
 try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib
-
-try:
     from tqdm import tqdm
     HAS_TQDM = True
 except ImportError:
     HAS_TQDM = False
 
 from .db import DB
-from .store import create_store_from_spec, CachedFSBlockStore, BlockStore
+from .store import create_store_from_spec, CachedFSBlockStore, BlockStore, S3RemoteStore
 from .diff import Differ, Added, Deleted, Modified
 from .db_diff import diff_db, DBDiff, TableDiff
 from .sqlite_import import import_sqlite_database, import_sqlite_table, validate_tree_sorted
@@ -1044,9 +1039,11 @@ def push_to_s3(prolly_dir: str = '.prolly', base_commit: Optional[str] = None,
         print("Error: tqdm is required for progress bar. Install with: pip install tqdm")
         return
 
-    # Load S3 config
+    # Load S3 remote store from config
     config_path = os.path.join(prolly_dir, 's3.toml')
-    if not os.path.exists(config_path):
+    try:
+        remote = S3RemoteStore.from_config(config_path)
+    except FileNotFoundError:
         print(f"Error: S3 config not found at {config_path}")
         print("\nCreate a config file with:")
         print("""
@@ -1058,22 +1055,8 @@ secret_access_key = "YOUR_SECRET_KEY"
 region = "us-east-1"  # optional, defaults to us-east-1
 """)
         return
-
-    with open(config_path, 'rb') as f:
-        config = tomllib.load(f)
-
-    s3_config = config.get('s3', {})
-    bucket = s3_config.get('bucket')
-    prefix = s3_config.get('prefix', '')
-    access_key = s3_config.get('access_key_id')
-    secret_key = s3_config.get('secret_access_key')
-    region = s3_config.get('region', 'us-east-1')
-
-    if not bucket:
-        print("Error: 'bucket' not specified in s3.toml")
-        return
-    if not access_key or not secret_key:
-        print("Error: 'access_key_id' and 'secret_access_key' required in s3.toml")
+    except ValueError as e:
+        print(f"Error: {e}")
         return
 
     # Open repository
@@ -1098,16 +1081,9 @@ region = "us-east-1"  # optional, defaults to us-east-1
         print(f"Base commit: {base_hash.hex()[:8]}")
 
     # Push using repo method
-    print(f"\nPushing to s3://{bucket}/{prefix}")
+    print(f"\nPushing to s3://{remote.bucket}/{remote.prefix}")
     try:
-        total, push_iter = repo.push(
-            bucket=bucket,
-            prefix=prefix,
-            access_key=access_key,
-            secret_key=secret_key,
-            region=region,
-            base_commit=base_hash
-        )
+        total, push_iter = repo.push(remote, base_commit=base_hash)
     except ValueError as e:
         print(f"Error: {e}")
         return
