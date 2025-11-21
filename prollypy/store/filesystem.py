@@ -1,74 +1,18 @@
 """
-Storage backends for ProllyTree nodes.
-
-Provides a BlockStore protocol and multiple implementations:
-- MemoryBlockStore: In-memory storage using a dictionary
-- FileSystemBlockStore: Persistent storage using the filesystem
+Filesystem-based storage backends for ProllyTree nodes.
 """
 
-from typing import Protocol, Optional, Iterator
 import os
 import pickle
+from typing import Optional, Iterator
 from collections import OrderedDict
-from .stats import Stats
-from .node import Node
+
+from ..node import Node
+from ..stats import Stats
+from .protocols import BlockStore
 
 
-class BlockStore(Protocol):
-    """Protocol for node storage backends."""
-
-    def put_node(self, node_hash: bytes, node: Node):
-        """Store a node by its hash."""
-        ...
-
-    def get_node(self, node_hash: bytes) -> Optional[Node]:
-        """Retrieve a node by its hash. Returns None if not found."""
-        ...
-
-    def delete_node(self, node_hash: bytes) -> bool:
-        """Delete a node by its hash. Returns True if deleted, False if not found."""
-        ...
-
-    def list_nodes(self) -> Iterator[bytes]:
-        """Iterate over all node hashes in the store."""
-        ...
-
-    def count_nodes(self) -> int:
-        """Return the total number of nodes in storage."""
-        ...
-
-
-class MemoryBlockStore:
-    """In-memory node storage using a dictionary."""
-
-    def __init__(self):
-        self.nodes: dict[bytes, Node] = {}
-
-    def put_node(self, node_hash: bytes, node: Node):
-        """Store a node in memory."""
-        self.nodes[node_hash] = node
-
-    def get_node(self, node_hash: bytes) -> Optional[Node]:
-        """Retrieve a node from memory."""
-        return self.nodes.get(node_hash)
-
-    def delete_node(self, node_hash: bytes) -> bool:
-        """Delete a node from memory."""
-        if node_hash in self.nodes:
-            del self.nodes[node_hash]
-            return True
-        return False
-
-    def list_nodes(self) -> Iterator[bytes]:
-        """Iterate over all node hashes in memory."""
-        yield from self.nodes.keys()
-
-    def count_nodes(self) -> int:
-        """Return the total number of nodes in storage."""
-        return len(self.nodes)
-
-
-class FileSystemBlockStore:
+class FileSystemBlockStore(BlockStore):
     """File system-based node storage."""
 
     def __init__(self, base_path: str):
@@ -157,8 +101,12 @@ class FileSystemBlockStore:
         """Return node size statistics."""
         return self.stats.get_size_stats()
 
+    def url(self) -> str:
+        """Return URL for this store."""
+        return f"file://{self.base_path}"
 
-class CachedFSBlockStore:
+
+class CachedFSBlockStore(BlockStore):
     """Filesystem storage with LRU cache for frequently accessed nodes."""
 
     def __init__(self, base_path: str, cache_size: int = 1000):
@@ -274,33 +222,6 @@ class CachedFSBlockStore:
         """Print size distributions for leaf and internal nodes."""
         self.fs_store.stats.print_distributions(bucket_count)
 
-
-def create_store_from_spec(spec: str, cache_size: Optional[int] = None) -> BlockStore:
-    """
-    Create a block store from a specification string.
-
-    Args:
-        spec: Store specification, one of:
-            - ':memory:' - in-memory storage
-            - 'file:///path/to/dir' - filesystem storage
-            - 'cached-file:///path/to/dir' - cached filesystem storage
-            - 's3://bucket-name' - S3 storage (not yet implemented)
-        cache_size: Cache size for cached stores (default: 1000)
-
-    Returns:
-        BlockStore instance
-    """
-    if spec == ':memory:':
-        return MemoryBlockStore()
-    elif spec.startswith('cached-file://'):
-        # Remove 'cached-file://' prefix
-        path = spec[14:]
-        return CachedFSBlockStore(path, cache_size=cache_size or 1000)
-    elif spec.startswith('file://'):
-        # Remove 'file://' prefix
-        path = spec[7:]
-        return FileSystemBlockStore(path)
-    elif spec.startswith('s3://'):
-        raise NotImplementedError("S3 storage not yet implemented")
-    else:
-        raise ValueError(f"Invalid store spec: {spec}")
+    def url(self) -> str:
+        """Return URL for this store."""
+        return f"cached-file://{self.fs_store.base_path}"

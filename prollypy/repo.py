@@ -8,8 +8,11 @@ Includes commit tracking, branching, and reference management.
 import time
 import heapq
 from typing import Optional, List, Dict, Tuple, Iterator, Set
-from .store import BlockStore
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from .store import BlockStore, Remote
 from .commit_graph_store import Commit, CommitGraphStore
+from .commonality import collect_node_hashes
 
 
 class Repo:
@@ -380,3 +383,119 @@ class Repo:
             tree_roots.add(commit.tree_root)
 
         return tree_roots
+
+    def get_nodes_to_push(self, base_commit: Optional[bytes] = None) -> Set[bytes]:
+        """
+        Get all nodes that need to be pushed to a remote.
+
+        Returns nodes reachable from HEAD but not from base_commit.
+        If base_commit is None, returns all nodes reachable from HEAD.
+
+        Args:
+            base_commit: Hash of the last commit already in remote (optional)
+
+        Returns:
+            Set of node hashes to push
+        """
+        # Get HEAD commit
+        head_commit, _ = self.get_head()
+        if head_commit is None:
+            return set()
+
+        # Collect all tree roots from HEAD to base_commit
+        new_tree_roots: Set[bytes] = set()
+        for commit_hash, commit in self.log():
+            new_tree_roots.add(commit.tree_root)
+            # If we hit base_commit, stop (don't include it)
+            if base_commit and commit_hash == base_commit:
+                new_tree_roots.discard(commit.tree_root)
+                break
+
+        # Collect all nodes reachable from new tree roots
+        new_nodes: Set[bytes] = set()
+        for tree_root in new_tree_roots:
+            nodes = collect_node_hashes(self.block_store, tree_root)
+            new_nodes.update(nodes)
+
+        # If base_commit specified, subtract nodes reachable from it
+        if base_commit:
+            base_commit_obj = self.get_commit(base_commit)
+            if base_commit_obj is None:
+                raise ValueError(f"Base commit not found: {base_commit.hex()}")
+
+            # Collect all tree roots reachable from base_commit
+            base_tree_roots: Set[bytes] = set()
+            for commit_hash, commit in self.log(start_ref=base_commit.hex()):
+                base_tree_roots.add(commit.tree_root)
+
+            # Collect all nodes reachable from base
+            base_nodes: Set[bytes] = set()
+            for tree_root in base_tree_roots:
+                nodes = collect_node_hashes(self.block_store, tree_root)
+                base_nodes.update(nodes)
+
+            # Subtract to get nodes to push
+            return new_nodes - base_nodes
+
+        return new_nodes
+
+    def push(
+        self,
+        remote: Remote,
+        threads: int = 50
+    ) -> Tuple[int, Iterator[bytes]]:
+        """
+        Push nodes to a remote store.
+
+        Automatically determines which nodes to push by checking the remote's
+        ref for the current branch. After pushing, updates the remote's ref.
+
+        Returns a tuple of (total_count, iterator) where the iterator yields
+        each node hash as it's successfully pushed. This allows the caller
+        to render a progress bar.
+
+        Args:
+            remote: Remote block store to push nodes to (must implement BlockStore and Remote)
+            threads: Number of parallel upload threads (default: 50)
+
+        Returns:
+            Tuple of (total_nodes_to_push, iterator_of_pushed_hashes)
+        """
+        # Get current branch and HEAD commit
+        head_commit, ref_name = self.get_head()
+        if head_commit is None:
+            return (0, iter([]))
+
+        head_hash = head_commit.compute_hash()
+
+        # Check what commit this branch is at on the remote
+        remote_commit_hex = remote.get_ref_commit(ref_name)
+        if remote_commit_hex:
+            base_commit = bytes.fromhex(remote_commit_hex)
+        else:
+            base_commit = None
+
+        # Get nodes to push
+        nodes_to_push = self.get_nodes_to_push(base_commit)
+        total = len(nodes_to_push)
+
+        def push_one(node_hash: bytes) -> bytes:
+            node = self.block_store.get_node(node_hash)
+            if node is not None:
+                remote.put_node(node_hash, node)
+            return node_hash
+
+        def push_generator() -> Iterator[bytes]:
+            with ThreadPoolExecutor(max_workers=threads) as executor:
+                for node_hash in executor.map(push_one, nodes_to_push):
+                    yield node_hash
+
+            # After all nodes are pushed, update the remote's ref with CAS
+            if not remote.update_ref(ref_name, remote_commit_hex, head_hash.hex()):
+                raise RuntimeError(
+                    f"Failed to update ref '{ref_name}': concurrent push detected. "
+                    f"Expected {remote_commit_hex[:8] if remote_commit_hex else 'None'}, "
+                    f"but remote has changed."
+                )
+
+        return (total, push_generator())

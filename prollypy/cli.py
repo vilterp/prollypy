@@ -12,8 +12,14 @@ import getpass
 from datetime import datetime
 from typing import Optional, List
 
+try:
+    from tqdm import tqdm
+    HAS_TQDM = True
+except ImportError:
+    HAS_TQDM = False
+
 from .db import DB
-from .store import create_store_from_spec, CachedFSBlockStore, BlockStore
+from .store import create_store_from_spec, CachedFSBlockStore, BlockStore, S3BlockStore
 from .diff import Differ, Added, Deleted, Modified
 from .db_diff import diff_db, DBDiff, TableDiff
 from .sqlite_import import import_sqlite_database, import_sqlite_table, validate_tree_sorted
@@ -1016,6 +1022,91 @@ def checkout_branch(ref_name: str, prolly_dir: str = '.prolly'):
         print(f"Error: {e}")
 
 
+def push_to_remote(prolly_dir: str = '.prolly', cache_size: int = 1000,
+                   remote_name: str = 'origin', threads: int = 50):
+    """
+    Push nodes to a remote.
+
+    Automatically determines which nodes to push by checking what commit
+    the current branch is at on the remote.
+
+    Args:
+        prolly_dir: Repository directory
+        cache_size: Cache size for cached stores
+        remote_name: Name of remote to push to (default: origin)
+        threads: Number of parallel upload threads (default: 50)
+    """
+    if not HAS_TQDM:
+        print("Error: tqdm is required for progress bar. Install with: pip install tqdm")
+        return
+
+    # Load remote store from config
+    config_path = os.path.join(prolly_dir, 'config.toml')
+    try:
+        remote = S3BlockStore.from_config(config_path, remote_name)
+    except FileNotFoundError:
+        print(f"Error: Config not found at {config_path}")
+        print("\nCreate a config file with:")
+        print("""
+[remotes.origin]
+type = "s3"
+bucket = "your-bucket-name"
+prefix = "prolly/"  # optional prefix for all blobs
+access_key_id = "YOUR_ACCESS_KEY"
+secret_access_key = "YOUR_SECRET_KEY"
+region = "us-east-1"  # optional, defaults to us-east-1
+""")
+        return
+    except ValueError as e:
+        print(f"Error: {e}")
+        return
+
+    # Open repository
+    repo = _get_repo(prolly_dir, cache_size=cache_size)
+
+    # Get HEAD commit
+    head_commit, ref_name = repo.get_head()
+    if head_commit is None:
+        print("Error: No commits in repository")
+        return
+
+    head_hash = head_commit.compute_hash()
+    print(f"HEAD: {head_hash.hex()[:8]} ({ref_name})")
+
+    # Check what commit this branch is at on the remote
+    remote_commit = remote.get_ref_commit(ref_name)
+    if remote_commit:
+        print(f"Remote {ref_name}: {remote_commit[:8]}")
+    else:
+        print(f"Remote {ref_name}: (not found, will push all)")
+
+    # Push using repo method
+    print(f"\nPushing to {remote.url()} ({threads} threads)")
+    try:
+        total, push_iter = repo.push(remote, threads=threads)
+    except ValueError as e:
+        print(f"Error: {e}")
+        return
+
+    if total == 0:
+        print("Nothing to push!")
+        return
+
+    print(f"Nodes to push: {total}")
+
+    # Iterate with progress bar
+    pushed = 0
+    for node_hash in tqdm(push_iter, total=total, desc="Pushing", unit="node"):
+        pushed += 1
+
+    # Summary
+    print(f"\n{'='*60}")
+    print("PUSH COMPLETE")
+    print(f"{'='*60}")
+    print(f"Nodes pushed: {pushed}/{total}")
+    print(f"Updated {ref_name} to {head_hash.hex()[:8]}")
+
+
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -1359,6 +1450,40 @@ Examples:
     checkout_parser.add_argument('--dir', default='.prolly',
                         help='Repository directory (default: .prolly)')
 
+    # Push subcommand
+    push_parser = subparsers.add_parser('push', help='Push nodes to remote',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  # Push to default remote (origin)
+  python cli.py push
+
+  # Push to a specific remote
+  python cli.py push --remote backup
+
+  # Push with more threads
+  python cli.py push --threads 100
+
+Configuration:
+  Create .prolly/config.toml with:
+
+  [remotes.origin]
+  type = "s3"
+  bucket = "your-bucket-name"
+  prefix = "prolly/"
+  access_key_id = "YOUR_ACCESS_KEY"
+  secret_access_key = "YOUR_SECRET_KEY"
+  region = "us-east-1"
+        ''')
+    push_parser.add_argument('--dir', default='.prolly',
+                        help='Repository directory (default: .prolly)')
+    push_parser.add_argument('--cache-size', type=int, default=1000,
+                        help='Cache size for cached stores (default: 1000)')
+    push_parser.add_argument('--remote', default='origin',
+                        help='Remote name to push to (default: origin)')
+    push_parser.add_argument('--threads', type=int, default=50,
+                        help='Number of parallel upload threads (default: 50)')
+
     args = parser.parse_args()
 
     if args.command == 'init':
@@ -1453,6 +1578,13 @@ Examples:
         checkout_branch(
             ref_name=args.ref_name,
             prolly_dir=args.dir
+        )
+    elif args.command == 'push':
+        push_to_remote(
+            prolly_dir=args.dir,
+            cache_size=args.cache_size,
+            remote_name=args.remote,
+            threads=args.threads
         )
     else:
         parser.print_help()
