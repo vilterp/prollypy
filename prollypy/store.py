@@ -185,6 +185,10 @@ class MemoryBlockStore:
         """Return the total number of nodes in storage."""
         return len(self.nodes)
 
+    def url(self) -> str:
+        """Return URL for this store."""
+        return ":memory:"
+
 
 class FileSystemBlockStore:
     """File system-based node storage."""
@@ -274,6 +278,10 @@ class FileSystemBlockStore:
     def get_size_stats(self):
         """Return node size statistics."""
         return self.stats.get_size_stats()
+
+    def url(self) -> str:
+        """Return URL for this store."""
+        return f"file://{self.base_path}"
 
 
 class CachedFSBlockStore:
@@ -391,6 +399,10 @@ class CachedFSBlockStore:
     def print_distributions(self, bucket_count: int = 10):
         """Print size distributions for leaf and internal nodes."""
         self.fs_store.stats.print_distributions(bucket_count)
+
+    def url(self) -> str:
+        """Return URL for this store."""
+        return f"cached-file://{self.fs_store.base_path}"
 
 
 def create_store_from_spec(spec: str, cache_size: Optional[int] = None) -> BlockStore:
