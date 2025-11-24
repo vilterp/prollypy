@@ -21,7 +21,7 @@ pub struct TreeCursor<'a> {
     /// Uses Arc<Node> to avoid cloning nodes during traversal
     stack: Vec<(Arc<Node>, usize)>,
     /// Current key-value pair (None until first next() call)
-    current: Option<(Vec<u8>, Vec<u8>)>,
+    current: Option<(Arc<[u8]>, Arc<[u8]>)>,
 }
 
 impl<'a> TreeCursor<'a> {
@@ -74,7 +74,7 @@ impl<'a> TreeCursor<'a> {
             // Using separator semantics: keys[i] = first key in values[i+1]
             let mut child_idx = 0;
             for (i, separator) in node.keys.iter().enumerate() {
-                if target.as_ref() >= separator.as_slice() {
+                if target.as_ref() >= separator.as_ref() {
                     child_idx = i + 1;
                 } else {
                     break;
@@ -83,7 +83,7 @@ impl<'a> TreeCursor<'a> {
 
             // Descend into the chosen child
             let child_hash = if child_idx < node.values.len() {
-                node.values[child_idx].clone()
+                node.values[child_idx].to_vec()
             } else {
                 // Push this node and return
                 self.stack.push((node, child_idx));
@@ -102,7 +102,7 @@ impl<'a> TreeCursor<'a> {
         // At a leaf node: find first key >= target
         let mut idx = node.keys.len(); // Default: all keys < target
         for (i, key) in node.keys.iter().enumerate() {
-            if key.as_slice() >= target {
+            if key.as_ref() >= target {
                 idx = i;
                 break;
             }
@@ -124,7 +124,7 @@ impl<'a> TreeCursor<'a> {
                 self.stack.push((node, 0));
                 return;
             }
-            let child_hash = node.values[0].clone();
+            let child_hash = node.values[0].to_vec();
             self.stack.push((node, 0));
 
             node = match self.store.get_node(&child_hash) {
@@ -149,7 +149,7 @@ impl<'a> TreeCursor<'a> {
         // Look for the next child hash we'll descend into
         for (node, idx) in self.stack.iter().rev() {
             if !node.is_leaf && *idx < node.values.len() {
-                return Some(node.values[*idx].clone());
+                return Some(node.values[*idx].to_vec());
             }
         }
 
@@ -159,7 +159,7 @@ impl<'a> TreeCursor<'a> {
     /// Advance to the next key-value pair.
     ///
     /// Returns (key, value) tuple, or None if exhausted
-    pub fn next(&mut self) -> Option<(Vec<u8>, Vec<u8>)> {
+    pub fn next(&mut self) -> Option<(Arc<[u8]>, Arc<[u8]>)> {
         if self.stack.is_empty() {
             self.current = None;
             return None;
@@ -198,7 +198,7 @@ impl<'a> TreeCursor<'a> {
             // At internal node: shouldn't happen in normal traversal
             // This means we need to descend to next child
             if idx < node.values.len() {
-                let child_hash = node.values[idx].clone();
+                let child_hash = node.values[idx].to_vec();
                 // Descend into this child (don't increment idx yet)
                 self.descend_to_first(&child_hash);
                 return self.next();
@@ -223,7 +223,7 @@ impl<'a> TreeCursor<'a> {
                 // Internal node: we just finished child at idx, try next child at idx+1
                 let next_idx = idx + 1;
                 if next_idx < node.values.len() {
-                    let child_hash = node.values[next_idx].clone();
+                    let child_hash = node.values[next_idx].to_vec();
                     // Update index to next_idx
                     let stack_len = self.stack.len();
                     self.stack[stack_len - 1].1 = next_idx;
@@ -251,7 +251,7 @@ impl<'a> TreeCursor<'a> {
         for i in (0..self.stack.len()).rev() {
             let (node, idx) = &self.stack[i];
             if !node.is_leaf && *idx > 0 && idx - 1 < node.values.len() {
-                if &node.values[idx - 1] == subtree_hash {
+                if node.values[idx - 1].as_ref() == subtree_hash.as_slice() {
                     // We just descended into this subtree, need to skip it
                     // Pop everything below and including this level
                     self.stack.truncate(i + 1);
@@ -285,10 +285,10 @@ mod tests {
 
         // Create a simple leaf node
         let mut leaf = Node::new_leaf();
-        leaf.keys.push(b"a".to_vec());
-        leaf.values.push(b"val_a".to_vec());
-        leaf.keys.push(b"b".to_vec());
-        leaf.values.push(b"val_b".to_vec());
+        leaf.keys.push(Arc::from(&b"a"[..]));
+        leaf.values.push(Arc::from(&b"val_a"[..]));
+        leaf.keys.push(Arc::from(&b"b"[..]));
+        leaf.values.push(Arc::from(&b"val_b"[..]));
 
         let root_hash = hash_node(&leaf);
         store.put_node(&root_hash, leaf);
@@ -297,12 +297,12 @@ mod tests {
         let mut cursor = TreeCursor::new(&store as &dyn BlockStore, root_hash, None);
 
         let (k, v) = cursor.next().unwrap();
-        assert_eq!(k, b"a".to_vec());
-        assert_eq!(v, b"val_a".to_vec());
+        assert_eq!(k.as_ref(), b"a");
+        assert_eq!(v.as_ref(), b"val_a");
 
         let (k, v) = cursor.next().unwrap();
-        assert_eq!(k, b"b".to_vec());
-        assert_eq!(v, b"val_b".to_vec());
+        assert_eq!(k.as_ref(), b"b");
+        assert_eq!(v.as_ref(), b"val_b");
 
         assert!(cursor.next().is_none());
     }
@@ -313,16 +313,16 @@ mod tests {
 
         // Create two leaf nodes
         let mut left_leaf = Node::new_leaf();
-        left_leaf.keys.push(b"a".to_vec());
-        left_leaf.values.push(b"val_a".to_vec());
-        left_leaf.keys.push(b"b".to_vec());
-        left_leaf.values.push(b"val_b".to_vec());
+        left_leaf.keys.push(Arc::from(&b"a"[..]));
+        left_leaf.values.push(Arc::from(&b"val_a"[..]));
+        left_leaf.keys.push(Arc::from(&b"b"[..]));
+        left_leaf.values.push(Arc::from(&b"val_b"[..]));
 
         let mut right_leaf = Node::new_leaf();
-        right_leaf.keys.push(b"d".to_vec());
-        right_leaf.values.push(b"val_d".to_vec());
-        right_leaf.keys.push(b"e".to_vec());
-        right_leaf.values.push(b"val_e".to_vec());
+        right_leaf.keys.push(Arc::from(&b"d"[..]));
+        right_leaf.values.push(Arc::from(&b"val_d"[..]));
+        right_leaf.keys.push(Arc::from(&b"e"[..]));
+        right_leaf.values.push(Arc::from(&b"val_e"[..]));
 
         let left_hash = hash_node(&left_leaf);
         let right_hash = hash_node(&right_leaf);
@@ -331,9 +331,9 @@ mod tests {
 
         // Create internal node
         let mut internal = Node::new_internal();
-        internal.keys.push(b"d".to_vec()); // First key of right child
-        internal.values.push(left_hash);
-        internal.values.push(right_hash);
+        internal.keys.push(Arc::from(&b"d"[..])); // First key of right child
+        internal.values.push(Arc::from(left_hash));
+        internal.values.push(Arc::from(right_hash));
 
         let root_hash = hash_node(&internal);
         store.put_node(&root_hash, internal);
@@ -342,13 +342,13 @@ mod tests {
         let mut cursor = TreeCursor::new(&store as &dyn BlockStore, root_hash, None);
 
         let (k, _) = cursor.next().unwrap();
-        assert_eq!(k, b"a");
+        assert_eq!(k.as_ref(), b"a");
         let (k, _) = cursor.next().unwrap();
-        assert_eq!(k, b"b");
+        assert_eq!(k.as_ref(), b"b");
         let (k, _) = cursor.next().unwrap();
-        assert_eq!(k, b"d");
+        assert_eq!(k.as_ref(), b"d");
         let (k, _) = cursor.next().unwrap();
-        assert_eq!(k, b"e");
+        assert_eq!(k.as_ref(), b"e");
 
         assert!(cursor.next().is_none());
     }
@@ -358,12 +358,12 @@ mod tests {
         let store = MemoryBlockStore::new();
 
         let mut leaf = Node::new_leaf();
-        leaf.keys.push(b"a".to_vec());
-        leaf.values.push(b"val_a".to_vec());
-        leaf.keys.push(b"d".to_vec());
-        leaf.values.push(b"val_d".to_vec());
-        leaf.keys.push(b"g".to_vec());
-        leaf.values.push(b"val_g".to_vec());
+        leaf.keys.push(Arc::from(&b"a"[..]));
+        leaf.values.push(Arc::from(&b"val_a"[..]));
+        leaf.keys.push(Arc::from(&b"d"[..]));
+        leaf.values.push(Arc::from(&b"val_d"[..]));
+        leaf.keys.push(Arc::from(&b"g"[..]));
+        leaf.values.push(Arc::from(&b"val_g"[..]));
 
         let root_hash = hash_node(&leaf);
         store.put_node(&root_hash, leaf);
@@ -372,9 +372,9 @@ mod tests {
         let mut cursor = TreeCursor::new(&store as &dyn BlockStore, root_hash, Some(b"d"));
 
         let (k, _) = cursor.next().unwrap();
-        assert_eq!(k, b"d");
+        assert_eq!(k.as_ref(), b"d");
         let (k, _) = cursor.next().unwrap();
-        assert_eq!(k, b"g");
+        assert_eq!(k.as_ref(), b"g");
         assert!(cursor.next().is_none());
     }
 }

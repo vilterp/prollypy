@@ -102,8 +102,8 @@ impl DB {
         let items = self.tree.items(Some(&schema_key));
 
         for (key, value) in items {
-            if key == schema_key {
-                return serde_json::from_slice(&value).ok();
+            if key.as_ref() == schema_key.as_slice() {
+                return serde_json::from_slice(value.as_ref()).ok();
             }
         }
         None
@@ -120,7 +120,7 @@ impl DB {
         let mut tables = Vec::new();
 
         for (key, _) in items {
-            if key.starts_with(prefix) {
+            if key.as_ref().starts_with(prefix) {
                 if let Ok(table_name) = String::from_utf8(key[3..].to_vec()) {
                     tables.push(table_name);
                 }

@@ -3,6 +3,8 @@
 //! Efficiently computes differences between two trees by skipping identical subtrees
 //! based on content hashes.
 
+use std::sync::Arc;
+
 use crate::cursor::TreeCursor;
 use crate::store::BlockStore;
 use crate::Hash;
@@ -10,23 +12,23 @@ use crate::Hash;
 /// A key-value pair was added
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Added {
-    pub key: Vec<u8>,
-    pub value: Vec<u8>,
+    pub key: Arc<[u8]>,
+    pub value: Arc<[u8]>,
 }
 
 /// A key was deleted
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Deleted {
-    pub key: Vec<u8>,
-    pub old_value: Vec<u8>,
+    pub key: Arc<[u8]>,
+    pub old_value: Arc<[u8]>,
 }
 
 /// A key's value was modified
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Modified {
-    pub key: Vec<u8>,
-    pub old_value: Vec<u8>,
-    pub new_value: Vec<u8>,
+    pub key: Arc<[u8]>,
+    pub old_value: Arc<[u8]>,
+    pub new_value: Arc<[u8]>,
 }
 
 /// Diff event representing a change between two trees
@@ -289,8 +291,8 @@ mod tests {
         assert_eq!(events.len(), 2);
         match &events[0] {
             DiffEvent::Added(added) => {
-                assert_eq!(added.key, b"a");
-                assert_eq!(added.value, b"val_a");
+                assert_eq!(added.key.as_ref(), b"a");
+                assert_eq!(added.value.as_ref(), b"val_a");
             }
             _ => panic!("Expected Added event"),
         }
@@ -319,8 +321,8 @@ mod tests {
         assert_eq!(events.len(), 2);
         match &events[0] {
             DiffEvent::Deleted(deleted) => {
-                assert_eq!(deleted.key, b"a");
-                assert_eq!(deleted.old_value, b"val_a");
+                assert_eq!(deleted.key.as_ref(), b"a");
+                assert_eq!(deleted.old_value.as_ref(), b"val_a");
             }
             _ => panic!("Expected Deleted event"),
         }
@@ -344,9 +346,9 @@ mod tests {
         assert_eq!(events.len(), 1);
         match &events[0] {
             DiffEvent::Modified(modified) => {
-                assert_eq!(modified.key, b"a");
-                assert_eq!(modified.old_value, b"val_old");
-                assert_eq!(modified.new_value, b"val_new");
+                assert_eq!(modified.key.as_ref(), b"a");
+                assert_eq!(modified.old_value.as_ref(), b"val_old");
+                assert_eq!(modified.new_value.as_ref(), b"val_new");
             }
             _ => panic!("Expected Modified event"),
         }
@@ -383,7 +385,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         match &events[0] {
             DiffEvent::Modified(modified) => {
-                assert_eq!(modified.key, b"a/1");
+                assert_eq!(modified.key.as_ref(), b"a/1");
             }
             _ => panic!("Expected Modified event"),
         }

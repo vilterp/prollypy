@@ -4,6 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::sync::Arc;
 
 use crate::store::BlockStore;
 
@@ -52,10 +53,10 @@ use crate::store::BlockStore;
 pub struct Node {
     pub is_leaf: bool,
     /// Separator keys (for internal) or actual keys (for leaves)
-    pub keys: Vec<Vec<u8>>,
+    pub keys: Vec<Arc<[u8]>>,
     /// For leaf nodes: data values (bytes)
     /// For internal nodes: child hashes (bytes)
-    pub values: Vec<Vec<u8>>,
+    pub values: Vec<Arc<[u8]>>,
 }
 
 impl Node {
@@ -132,7 +133,7 @@ impl Node {
         self.collect_keys(&mut all_keys, store)?;
 
         // Check that all keys are in sorted order with no duplicates
-        let mut prev_key: Option<&Vec<u8>> = None;
+        let mut prev_key: Option<&Arc<[u8]>> = None;
         for (i, key) in all_keys.iter().enumerate() {
             if let Some(prev) = prev_key {
                 if key == prev {
@@ -156,7 +157,8 @@ impl Node {
                         if let Some(store) = store {
                             error_msg.push_str("\n  Children first keys:");
                             for (j, child_hash) in self.values.iter().enumerate() {
-                                if let Some(child) = store.get_node(child_hash) {
+                                let hash_vec = child_hash.to_vec();
+                                if let Some(child) = store.get_node(&hash_vec) {
                                     if !child.keys.is_empty() {
                                         let first_key = &child.keys[0];
                                         error_msg
@@ -200,9 +202,9 @@ impl Node {
                 ));
             }
 
-            let child_hash = &self.values[child_idx];
+            let child_hash = self.values[child_idx].to_vec();
             let child = store
-                .get_node(child_hash)
+                .get_node(&child_hash)
                 .ok_or_else(|| format!("Child {} not found in store{}", child_idx, context_str))?;
 
             // Get first key from child
@@ -224,7 +226,7 @@ impl Node {
     }
 
     /// Get the first key in a node's subtree.
-    fn get_first_key(&self, node: &Node, store: &dyn BlockStore) -> Option<Vec<u8>> {
+    fn get_first_key(&self, node: &Node, store: &dyn BlockStore) -> Option<Arc<[u8]>> {
         if node.is_leaf {
             node.keys.first().cloned()
         } else {
@@ -232,8 +234,8 @@ impl Node {
             if node.values.is_empty() {
                 return None;
             }
-            let child_hash = &node.values[0];
-            let child = store.get_node(child_hash)?;
+            let child_hash = node.values[0].to_vec();
+            let child = store.get_node(&child_hash)?;
             self.get_first_key(&child, store)
         }
     }
@@ -241,7 +243,7 @@ impl Node {
     /// Recursively collect all keys from this node's subtree in traversal order.
     fn collect_keys(
         &self,
-        result: &mut Vec<Vec<u8>>,
+        result: &mut Vec<Arc<[u8]>>,
         store: Option<&dyn BlockStore>,
     ) -> Result<(), String> {
         if self.is_leaf {
@@ -251,8 +253,9 @@ impl Node {
             // For internal nodes, traverse children in order
             let store = store.ok_or("Cannot validate internal node without store")?;
             for child_hash in &self.values {
-                let child = store.get_node(child_hash).ok_or_else(|| {
-                    format!("Child node {} not found in store", hex::encode(child_hash))
+                let hash_vec = child_hash.to_vec();
+                let child = store.get_node(&hash_vec).ok_or_else(|| {
+                    format!("Child node {} not found in store", hex::encode(child_hash.as_ref()))
                 })?;
                 child.collect_keys(result, Some(store))?;
             }
@@ -304,7 +307,7 @@ mod tests {
     #[test]
     fn test_validate_leaf_mismatch() {
         let mut node = Node::new_leaf();
-        node.keys.push(b"key1".to_vec());
+        node.keys.push(Arc::from(&b"key1"[..]));
         // values is empty, so mismatch
         let result = node.validate(None, "");
         assert!(result.is_err());
@@ -314,8 +317,8 @@ mod tests {
     #[test]
     fn test_validate_internal_mismatch() {
         let mut node = Node::new_internal();
-        node.keys.push(b"key1".to_vec());
-        node.values.push(b"hash1".to_vec());
+        node.keys.push(Arc::from(&b"key1"[..]));
+        node.values.push(Arc::from(&b"hash1"[..]));
         // Should have 2 values for 1 key
         let result = node.validate(None, "");
         assert!(result.is_err());
@@ -327,10 +330,10 @@ mod tests {
     #[test]
     fn test_validate_leaf_ordering() {
         let mut node = Node::new_leaf();
-        node.keys.push(b"b".to_vec());
-        node.values.push(b"val1".to_vec());
-        node.keys.push(b"a".to_vec());
-        node.values.push(b"val2".to_vec());
+        node.keys.push(Arc::from(&b"b"[..]));
+        node.values.push(Arc::from(&b"val1"[..]));
+        node.keys.push(Arc::from(&b"a"[..]));
+        node.values.push(Arc::from(&b"val2"[..]));
 
         let result = node.validate(None, "");
         assert!(result.is_err());
@@ -340,10 +343,10 @@ mod tests {
     #[test]
     fn test_validate_leaf_duplicates() {
         let mut node = Node::new_leaf();
-        node.keys.push(b"a".to_vec());
-        node.values.push(b"val1".to_vec());
-        node.keys.push(b"a".to_vec());
-        node.values.push(b"val2".to_vec());
+        node.keys.push(Arc::from(&b"a"[..]));
+        node.values.push(Arc::from(&b"val1"[..]));
+        node.keys.push(Arc::from(&b"a"[..]));
+        node.values.push(Arc::from(&b"val2"[..]));
 
         let result = node.validate(None, "");
         assert!(result.is_err());
@@ -353,12 +356,12 @@ mod tests {
     #[test]
     fn test_validate_valid_leaf() {
         let mut node = Node::new_leaf();
-        node.keys.push(b"a".to_vec());
-        node.values.push(b"val1".to_vec());
-        node.keys.push(b"b".to_vec());
-        node.values.push(b"val2".to_vec());
-        node.keys.push(b"c".to_vec());
-        node.values.push(b"val3".to_vec());
+        node.keys.push(Arc::from(&b"a"[..]));
+        node.values.push(Arc::from(&b"val1"[..]));
+        node.keys.push(Arc::from(&b"b"[..]));
+        node.values.push(Arc::from(&b"val2"[..]));
+        node.keys.push(Arc::from(&b"c"[..]));
+        node.values.push(Arc::from(&b"val3"[..]));
 
         let result = node.validate(None, "");
         assert!(result.is_ok());
@@ -370,12 +373,12 @@ mod tests {
 
         // Create two leaf children
         let mut left_leaf = Node::new_leaf();
-        left_leaf.keys.push(b"a".to_vec());
-        left_leaf.values.push(b"val_a".to_vec());
+        left_leaf.keys.push(Arc::from(&b"a"[..]));
+        left_leaf.values.push(Arc::from(&b"val_a"[..]));
 
         let mut right_leaf = Node::new_leaf();
-        right_leaf.keys.push(b"d".to_vec());
-        right_leaf.values.push(b"val_d".to_vec());
+        right_leaf.keys.push(Arc::from(&b"d"[..]));
+        right_leaf.values.push(Arc::from(&b"val_d"[..]));
 
         // Store them
         let left_hash = vec![1, 2, 3];
@@ -385,9 +388,9 @@ mod tests {
 
         // Create internal node with correct separator
         let mut internal = Node::new_internal();
-        internal.keys.push(b"d".to_vec()); // First key of right child
-        internal.values.push(left_hash);
-        internal.values.push(right_hash);
+        internal.keys.push(Arc::from(&b"d"[..])); // First key of right child
+        internal.values.push(Arc::from(left_hash));
+        internal.values.push(Arc::from(right_hash));
 
         let result = internal.validate(Some(&store as &dyn BlockStore), "");
         assert!(result.is_ok());
@@ -399,12 +402,12 @@ mod tests {
 
         // Create two leaf children
         let mut left_leaf = Node::new_leaf();
-        left_leaf.keys.push(b"a".to_vec());
-        left_leaf.values.push(b"val_a".to_vec());
+        left_leaf.keys.push(Arc::from(&b"a"[..]));
+        left_leaf.values.push(Arc::from(&b"val_a"[..]));
 
         let mut right_leaf = Node::new_leaf();
-        right_leaf.keys.push(b"d".to_vec());
-        right_leaf.values.push(b"val_d".to_vec());
+        right_leaf.keys.push(Arc::from(&b"d"[..]));
+        right_leaf.values.push(Arc::from(&b"val_d"[..]));
 
         // Store them
         let left_hash = vec![1, 2, 3];
@@ -414,9 +417,9 @@ mod tests {
 
         // Create internal node with WRONG separator
         let mut internal = Node::new_internal();
-        internal.keys.push(b"wrong".to_vec()); // Should be "d"
-        internal.values.push(left_hash);
-        internal.values.push(right_hash);
+        internal.keys.push(Arc::from(&b"wrong"[..])); // Should be "d"
+        internal.values.push(Arc::from(left_hash));
+        internal.values.push(Arc::from(right_hash));
 
         let result = internal.validate(Some(&store as &dyn BlockStore), "");
         assert!(result.is_err());
