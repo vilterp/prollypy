@@ -663,21 +663,23 @@ impl Repo {
     /// Pull nodes from a remote store using parallel downloads.
     ///
     /// Discovers and downloads commits and nodes concurrently using a queue-based
-    /// approach. Returns progress events as items are downloaded.
+    /// approach. Calls the progress callback as items are downloaded.
     ///
     /// # Arguments
     ///
     /// * `remote` - Remote block store to pull nodes from
     /// * `threads` - Number of parallel download threads (default: 50)
+    /// * `progress_callback` - Optional callback for progress updates
     ///
     /// # Returns
     ///
-    /// Vector of progress events
+    /// Number of items pulled
     pub fn pull<R: Remote + 'static>(
         &self,
         remote: Arc<R>,
         threads: usize,
-    ) -> Vec<PullProgress> {
+        mut progress_callback: Option<Box<dyn FnMut(PullProgress) + Send>>,
+    ) -> usize {
         let threads = if threads == 0 { 50 } else { threads };
 
         // Get current branch
@@ -689,18 +691,18 @@ impl Repo {
         // Get remote commit
         let remote_commit_hex = match remote.get_ref_commit(&ref_name) {
             Some(hex) => hex,
-            None => return vec![],
+            None => return 0,
         };
 
         let remote_commit_hash = match hex::decode(&remote_commit_hex) {
             Ok(hash) => hash,
-            Err(_) => return vec![],
+            Err(_) => return 0,
         };
 
         // If already up to date, nothing to do
         if let Some(ref local) = local_commit {
             if local == &remote_commit_hash {
-                return vec![];
+                return 0;
             }
         }
 
@@ -902,10 +904,13 @@ impl Repo {
         // Drop extra sender
         drop(results_tx);
 
-        // Collect results
-        let mut results = Vec::new();
+        // Collect results and call callback
+        let mut count = 0;
         while let Ok(progress) = results_rx.recv() {
-            results.push(progress);
+            count += 1;
+            if let Some(ref mut callback) = progress_callback {
+                callback(progress);
+            }
         }
 
         // Wait for all workers to complete
@@ -925,7 +930,7 @@ impl Repo {
         // Update local ref to the remote's commit
         self.commit_graph_store.set_ref(&ref_name, &remote_commit_hash);
 
-        results
+        count
     }
 }
 

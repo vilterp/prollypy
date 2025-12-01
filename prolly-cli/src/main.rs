@@ -1152,23 +1152,50 @@ fn pull_cmd(
 
     let start = Instant::now();
 
-    // Pull and collect progress
-    let progress = repo.pull(remote.clone(), threads);
+    // Track counts for summary
+    let commits_pulled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let nodes_pulled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    let commits_pulled_clone = commits_pulled.clone();
+    let nodes_pulled_clone = nodes_pulled.clone();
+
+    // Pull with progress callback
+    let total = repo.pull(
+        remote.clone(),
+        threads,
+        Some(Box::new(move |progress| {
+            // Count item types
+            match progress.item_type {
+                PullItemType::Commit => {
+                    commits_pulled_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                PullItemType::Node => {
+                    nodes_pulled_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+
+            // Display progress (similar to Python version)
+            print!("\rDone: {} | In progress: {} | Pending: {}  ",
+                   progress.done, progress.in_progress, progress.pending);
+            std::io::Write::flush(&mut std::io::stdout()).ok();
+        })),
+    );
+
+    println!(); // Newline after progress display
 
     let elapsed = start.elapsed();
 
-    // Count commits and nodes
-    let commits_pulled = progress.iter().filter(|p| p.item_type == PullItemType::Commit).count();
-    let nodes_pulled = progress.iter().filter(|p| p.item_type == PullItemType::Node).count();
+    let commits = commits_pulled.load(std::sync::atomic::Ordering::Relaxed);
+    let nodes = nodes_pulled.load(std::sync::atomic::Ordering::Relaxed);
 
     println!("================================================================================");
     println!("Pull complete!");
-    println!("Commits pulled: {}", commits_pulled);
-    println!("Nodes pulled: {}", nodes_pulled);
-    println!("Total items: {}", progress.len());
+    println!("Commits pulled: {}", commits);
+    println!("Nodes pulled: {}", nodes);
+    println!("Total items: {}", total);
     println!("Time: {:.2}s", elapsed.as_secs_f64());
-    if !progress.is_empty() {
-        println!("Rate: {:.0} items/sec", progress.len() as f64 / elapsed.as_secs_f64());
+    if total > 0 {
+        println!("Rate: {:.0} items/sec", total as f64 / elapsed.as_secs_f64());
     }
 
     // Show updated HEAD
