@@ -389,64 +389,135 @@ impl Remote for S3BlockStore {
         let old_hash_owned = old_hash.map(|s| s.to_string());
 
         self.runtime.block_on(async {
-            // First, check current value if old_hash is specified
-            let current_value = match client.get_object().bucket(&bucket).key(&key).send().await {
-                Ok(response) => {
-                    let data = response.body.collect().await
-                        .map_err(|e| StoreError::Network(format!("S3 read body failed: {}", e)))?;
-                    let s = String::from_utf8(data.to_vec())
-                        .map_err(|e| StoreError::Deserialization(format!("Invalid UTF-8: {}", e)))?;
-                    Some(s.trim().to_string())
-                }
-                Err(e) => {
-                    let is_not_found = e.as_service_error()
-                        .map(|se| se.is_no_such_key())
-                        .unwrap_or(false);
-                    if is_not_found {
-                        None
-                    } else {
-                        return Err(StoreError::Network(format!("S3 get_object failed: {}", e)));
+            if old_hash_owned.is_none() {
+                // Creating new ref - should not exist
+                // Use if_none_match("*") to ensure it doesn't exist (atomic)
+                let result = client
+                    .put_object()
+                    .bucket(&bucket)
+                    .key(&key)
+                    .body(new_hash.into_bytes().into())
+                    .if_none_match("*")
+                    .send()
+                    .await;
+
+                match result {
+                    Ok(_) => Ok(()),
+                    Err(e) => {
+                        // Check if it's a precondition failed (object already exists)
+                        let is_precondition_failed = e.as_service_error()
+                            .map(|se| {
+                                // S3 returns PreconditionFailed when if_none_match fails
+                                se.meta().code() == Some("PreconditionFailed")
+                            })
+                            .unwrap_or(false);
+                        if is_precondition_failed {
+                            // Get the actual value for the error message
+                            let actual = match client.get_object().bucket(&bucket).key(&key).send().await {
+                                Ok(response) => {
+                                    let data = response.body.collect().await.ok();
+                                    data.and_then(|d| String::from_utf8(d.to_vec()).ok())
+                                        .map(|s| s.trim().to_string())
+                                }
+                                Err(_) => Some("<unknown>".to_string()),
+                            };
+                            Err(StoreError::RefConflict {
+                                ref_name: ref_name_owned,
+                                expected: None,
+                                actual,
+                            })
+                        } else {
+                            Err(StoreError::Network(format!("S3 put_object failed: {}", e)))
+                        }
                     }
                 }
-            };
+            } else {
+                // Updating existing ref - get current value and ETag first
+                let (current_value, etag) = match client.get_object().bucket(&bucket).key(&key).send().await {
+                    Ok(response) => {
+                        let etag = response.e_tag().map(|s| s.to_string());
+                        let data = response.body.collect().await
+                            .map_err(|e| StoreError::Network(format!("S3 read body failed: {}", e)))?;
+                        let s = String::from_utf8(data.to_vec())
+                            .map_err(|e| StoreError::Deserialization(format!("Invalid UTF-8: {}", e)))?;
+                        (Some(s.trim().to_string()), etag)
+                    }
+                    Err(e) => {
+                        let is_not_found = e.as_service_error()
+                            .map(|se| se.is_no_such_key())
+                            .unwrap_or(false);
+                        if is_not_found {
+                            (None, None)
+                        } else {
+                            return Err(StoreError::Network(format!("S3 get_object failed: {}", e)));
+                        }
+                    }
+                };
 
-            // Check CAS condition
-            match (&old_hash_owned, &current_value) {
-                (Some(expected), Some(actual)) if expected != actual => {
-                    return Err(StoreError::RefConflict {
-                        ref_name: ref_name_owned,
-                        expected: old_hash_owned,
-                        actual: current_value,
-                    });
+                // Check if current value matches expected old_hash
+                let expected = old_hash_owned.as_ref();
+                match (&current_value, expected) {
+                    (Some(actual), Some(exp)) if actual != exp => {
+                        return Err(StoreError::RefConflict {
+                            ref_name: ref_name_owned,
+                            expected: old_hash_owned,
+                            actual: current_value,
+                        });
+                    }
+                    (None, Some(_)) => {
+                        return Err(StoreError::RefConflict {
+                            ref_name: ref_name_owned,
+                            expected: old_hash_owned,
+                            actual: None,
+                        });
+                    }
+                    _ => {} // Matches, proceed
                 }
-                (Some(_), None) => {
-                    return Err(StoreError::RefConflict {
-                        ref_name: ref_name_owned,
-                        expected: old_hash_owned,
-                        actual: None,
-                    });
+
+                // Update with ETag condition for atomicity
+                let etag = etag.ok_or_else(|| {
+                    StoreError::Network("S3 get_object did not return ETag".to_string())
+                })?;
+
+                let result = client
+                    .put_object()
+                    .bucket(&bucket)
+                    .key(&key)
+                    .body(new_hash.into_bytes().into())
+                    .if_match(&etag)
+                    .send()
+                    .await;
+
+                match result {
+                    Ok(_) => Ok(()),
+                    Err(e) => {
+                        // Check if it's a precondition failed (ETag changed - concurrent update)
+                        let is_precondition_failed = e.as_service_error()
+                            .map(|se| {
+                                se.meta().code() == Some("PreconditionFailed")
+                            })
+                            .unwrap_or(false);
+                        if is_precondition_failed {
+                            // Get the actual current value for the error message
+                            let actual = match client.get_object().bucket(&bucket).key(&key).send().await {
+                                Ok(response) => {
+                                    let data = response.body.collect().await.ok();
+                                    data.and_then(|d| String::from_utf8(d.to_vec()).ok())
+                                        .map(|s| s.trim().to_string())
+                                }
+                                Err(_) => Some("<unknown>".to_string()),
+                            };
+                            Err(StoreError::RefConflict {
+                                ref_name: ref_name_owned,
+                                expected: old_hash_owned,
+                                actual,
+                            })
+                        } else {
+                            Err(StoreError::Network(format!("S3 put_object failed: {}", e)))
+                        }
+                    }
                 }
-                (None, Some(_)) => {
-                    return Err(StoreError::RefConflict {
-                        ref_name: ref_name_owned,
-                        expected: None,
-                        actual: current_value,
-                    });
-                }
-                _ => {} // Condition matches, proceed with update
             }
-
-            // Update the ref
-            client
-                .put_object()
-                .bucket(&bucket)
-                .key(&key)
-                .body(new_hash.into_bytes().into())
-                .send()
-                .await
-                .map_err(|e| StoreError::Network(format!("S3 put_object failed: {}", e)))?;
-
-            Ok(())
         })
     }
 
