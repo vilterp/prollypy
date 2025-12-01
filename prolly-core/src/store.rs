@@ -467,6 +467,7 @@ pub fn create_store_from_spec(
 mod tests {
     use super::*;
     use crate::node::Node;
+    use std::sync::Arc;
     use tempfile::TempDir;
 
     #[test]
@@ -493,8 +494,8 @@ mod tests {
         let store = FileSystemBlockStore::new(temp_dir.path()).unwrap();
 
         let mut node = Node::new_leaf();
-        node.keys.push(b"key1".to_vec());
-        node.values.push(b"value1".to_vec());
+        node.keys.push(Arc::from(&b"key1"[..]));
+        node.values.push(Arc::from(&b"value1"[..]));
         let hash = vec![1, 2, 3, 4];
 
         store.put_node(&hash, node.clone());
@@ -502,7 +503,7 @@ mod tests {
         assert!(retrieved.is_some());
         let retrieved_node = retrieved.unwrap();
         assert!(retrieved_node.is_leaf);
-        assert_eq!(retrieved_node.keys, vec![b"key1".to_vec()]);
+        assert_eq!(retrieved_node.keys[0].as_ref(), b"key1");
 
         assert_eq!(store.count_nodes(), 1);
 

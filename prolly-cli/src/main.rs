@@ -649,7 +649,7 @@ fn get_key(
     let mut cursor = TreeCursor::new(repo.block_store.as_ref(), tree.get_root_hash(), Some(&key_bytes));
 
     if let Some((found_key, value)) = cursor.next() {
-        if found_key == key_bytes {
+        if found_key.as_ref() == key_bytes.as_slice() {
             println!("================================================================================");
             println!("GET from {}", ref_display);
             println!("================================================================================");
@@ -1010,7 +1010,8 @@ fn print_tree_recursive(
         // Print children
         let extension = if is_last { "    " } else { "│   " };
         for (i, child_hash) in node.values.iter().enumerate() {
-            if let Some(child_node) = store.get_node(child_hash) {
+            let hash_vec = child_hash.to_vec();
+            if let Some(child_node) = store.get_node(&hash_vec) {
                 let child_is_last = i == node.values.len() - 1;
                 print_tree_recursive(
                     &child_node,
