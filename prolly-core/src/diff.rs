@@ -1,7 +1,8 @@
 //! Diff algorithm for ProllyTree.
 //!
 //! Efficiently computes differences between two trees by skipping identical subtrees
-//! based on content hashes.
+//! based on content hashes. Provides a streaming iterator-based API using an explicit
+//! state machine for clarity.
 
 use std::sync::Arc;
 
@@ -46,195 +47,115 @@ pub struct DiffStats {
     pub nodes_compared: usize,
 }
 
-/// Diff two ProllyTree structures with statistics tracking
-pub struct Differ<'a> {
-    store: &'a dyn BlockStore,
-    stats: DiffStats,
-    prefix: Option<Vec<u8>>,
+/// Key-value entry type
+type Entry = (Arc<[u8]>, Arc<[u8]>);
+
+/// State machine for the diff iterator.
+enum DiffState<'a> {
+    /// Both trees have remaining entries to compare
+    Comparing {
+        old_cursor: TreeCursor<'a>,
+        new_cursor: TreeCursor<'a>,
+        old_entry: Entry,
+        new_entry: Entry,
+    },
+    /// New tree exhausted, draining remaining old entries as deletions
+    DrainOld {
+        old_cursor: TreeCursor<'a>,
+        old_entry: Entry,
+    },
+    /// Old tree exhausted, draining remaining new entries as additions
+    DrainNew {
+        new_cursor: TreeCursor<'a>,
+        new_entry: Entry,
+    },
+    /// Iteration complete
+    Done,
 }
 
-impl<'a> Differ<'a> {
-    /// Initialize differ with store.
-    ///
-    /// # Arguments
-    ///
-    /// * `store` - Storage backend containing both trees
-    pub fn new(store: &'a dyn BlockStore) -> Self {
-        Differ {
-            store,
-            stats: DiffStats::default(),
-            prefix: None,
-        }
-    }
+/// Streaming iterator for diff events between two trees.
+///
+/// This iterator yields `DiffEvent` values lazily as it traverses the trees,
+/// allowing consumers to process results incrementally without accumulating
+/// all events in memory.
+///
+/// The iterator uses an explicit state machine with four states:
+/// - `Comparing`: Both trees have entries, comparing keys
+/// - `DrainOld`: New tree exhausted, emitting deletions
+/// - `DrainNew`: Old tree exhausted, emitting additions
+/// - `Done`: Iteration complete
+///
+/// # Example
+///
+/// ```ignore
+/// for event in diff(store, &old_hash, &new_hash, None) {
+///     match event {
+///         DiffEvent::Added(a) => println!("+ {:?}", a.key),
+///         DiffEvent::Deleted(d) => println!("- {:?}", d.key),
+///         DiffEvent::Modified(m) => println!("M {:?}", m.key),
+///     }
+/// }
+/// ```
+pub struct DiffIterator<'a> {
+    state: DiffState<'a>,
+    prefix: Option<Vec<u8>>,
+    found_match: bool,
+    stats: DiffStats,
+}
 
-    /// Compute differences between two trees using cursor-based traversal.
-    ///
-    /// This algorithm handles trees with different structures by comparing
-    /// key-value pairs directly, regardless of tree shape.
-    ///
-    /// When a prefix is provided, uses O(log n) seeking to jump directly to
-    /// the prefix location in both trees, avoiding unnecessary iteration.
-    ///
-    /// # Arguments
-    ///
-    /// * `old_hash` - Root hash of the old tree
-    /// * `new_hash` - Root hash of the new tree
-    /// * `prefix` - Optional key prefix to filter diff results
-    ///
-    /// # Returns
-    ///
-    /// Vector of DiffEvent objects (Added, Deleted, or Modified) in key order
-    pub fn diff(
-        &mut self,
+impl<'a> DiffIterator<'a> {
+    /// Create a new diff iterator between two trees.
+    pub fn new(
+        store: &'a dyn BlockStore,
         old_hash: &Hash,
         new_hash: &Hash,
         prefix: Option<&[u8]>,
-    ) -> Vec<DiffEvent> {
-        // Reset stats for new diff operation
-        self.stats = DiffStats::default();
-        self.prefix = prefix.map(|p| p.to_vec());
+    ) -> Self {
+        let mut stats = DiffStats::default();
 
-        let mut events = Vec::new();
-
-        // If hashes are the same, trees are identical - no diff needed
+        // If hashes are the same, trees are identical
         if old_hash == new_hash {
-            self.stats.subtrees_skipped += 1;
-            return events;
+            stats.subtrees_skipped += 1;
+            return DiffIterator {
+                state: DiffState::Done,
+                prefix: prefix.map(|p| p.to_vec()),
+                found_match: false,
+                stats,
+            };
         }
 
         // Create cursors for both trees, seeking to prefix if provided
-        let mut old_cursor = TreeCursor::new(self.store, old_hash.clone(), prefix);
-        let mut new_cursor = TreeCursor::new(self.store, new_hash.clone(), prefix);
+        let mut old_cursor = TreeCursor::new(store, old_hash.clone(), prefix);
+        let mut new_cursor = TreeCursor::new(store, new_hash.clone(), prefix);
 
-        // Get first entries
-        let mut old_entry = old_cursor.next();
-        let mut new_entry = new_cursor.next();
+        // Get first entries and determine initial state
+        let old_entry = old_cursor.next();
+        let new_entry = new_cursor.next();
 
-        // Track if we've found any matches (for early termination with prefix)
-        let mut found_match = false;
+        let state = match (old_entry, new_entry) {
+            (Some(old), Some(new)) => DiffState::Comparing {
+                old_cursor,
+                new_cursor,
+                old_entry: old,
+                new_entry: new,
+            },
+            (Some(old), None) => DiffState::DrainOld {
+                old_cursor,
+                old_entry: old,
+            },
+            (None, Some(new)) => DiffState::DrainNew {
+                new_cursor,
+                new_entry: new,
+            },
+            (None, None) => DiffState::Done,
+        };
 
-        // Merge-like traversal of both trees
-        while old_entry.is_some() || new_entry.is_some() {
-            // Early termination: if we have a prefix and both entries don't match,
-            // and we've already found matches, we're past the prefix range
-            if prefix.is_some() {
-                let old_matches = old_entry
-                    .as_ref()
-                    .map(|(k, _)| self.matches_prefix(k))
-                    .unwrap_or(false);
-                let new_matches = new_entry
-                    .as_ref()
-                    .map(|(k, _)| self.matches_prefix(k))
-                    .unwrap_or(false);
-
-                if found_match && !old_matches && !new_matches {
-                    // We've passed the prefix range - stop
-                    break;
-                }
-            }
-
-            // Check for subtree skipping opportunity
-            if old_entry.is_some() && new_entry.is_some() {
-                let old_next_hash = old_cursor.peek_next_hash();
-                let new_next_hash = new_cursor.peek_next_hash();
-
-                if let (Some(old_hash), Some(new_hash)) = (&old_next_hash, &new_next_hash) {
-                    if old_hash == new_hash {
-                        // Same subtree coming up - skip it!
-                        self.stats.subtrees_skipped += 1;
-                        old_cursor.skip_subtree(old_hash);
-                        new_cursor.skip_subtree(new_hash);
-                        old_entry = old_cursor.next();
-                        new_entry = new_cursor.next();
-                        continue;
-                    }
-                }
-            }
-
-            match (&old_entry, &new_entry) {
-                (None, Some((new_key, new_value))) => {
-                    // Only new entries remain - all additions
-                    if self.matches_prefix(new_key) {
-                        found_match = true;
-                        events.push(DiffEvent::Added(Added {
-                            key: new_key.clone(),
-                            value: new_value.clone(),
-                        }));
-                    } else if prefix.is_some() && found_match {
-                        // Past prefix range
-                        break;
-                    }
-                    new_entry = new_cursor.next();
-                }
-                (Some((old_key, old_value)), None) => {
-                    // Only old entries remain - all deletions
-                    if self.matches_prefix(old_key) {
-                        found_match = true;
-                        events.push(DiffEvent::Deleted(Deleted {
-                            key: old_key.clone(),
-                            old_value: old_value.clone(),
-                        }));
-                    } else if prefix.is_some() && found_match {
-                        // Past prefix range
-                        break;
-                    }
-                    old_entry = old_cursor.next();
-                }
-                (Some((old_key, old_value)), Some((new_key, new_value))) => {
-                    // Both have entries - compare keys
-                    if old_key < new_key {
-                        // Key only in old tree - deleted
-                        if self.matches_prefix(old_key) {
-                            found_match = true;
-                            events.push(DiffEvent::Deleted(Deleted {
-                                key: old_key.clone(),
-                                old_value: old_value.clone(),
-                            }));
-                        }
-                        old_entry = old_cursor.next();
-                    } else if old_key > new_key {
-                        // Key only in new tree - added
-                        if self.matches_prefix(new_key) {
-                            found_match = true;
-                            events.push(DiffEvent::Added(Added {
-                                key: new_key.clone(),
-                                value: new_value.clone(),
-                            }));
-                        }
-                        new_entry = new_cursor.next();
-                    } else {
-                        // Same key in both trees
-                        if old_value != new_value {
-                            // Value changed - modified
-                            if self.matches_prefix(old_key) {
-                                found_match = true;
-                                events.push(DiffEvent::Modified(Modified {
-                                    key: old_key.clone(),
-                                    old_value: old_value.clone(),
-                                    new_value: new_value.clone(),
-                                }));
-                            }
-                        }
-                        // else: values are identical, no diff event needed
-
-                        // Advance both cursors
-                        old_entry = old_cursor.next();
-                        new_entry = new_cursor.next();
-                    }
-                }
-                (None, None) => {
-                    // Both exhausted
-                    break;
-                }
-            }
+        DiffIterator {
+            state,
+            prefix: prefix.map(|p| p.to_vec()),
+            found_match: false,
+            stats,
         }
-
-        events
-    }
-
-    /// Get statistics from the most recent diff operation
-    pub fn get_stats(&self) -> &DiffStats {
-        &self.stats
     }
 
     /// Check if a key matches the prefix filter
@@ -242,6 +163,260 @@ impl<'a> Differ<'a> {
         match &self.prefix {
             None => true,
             Some(prefix) => key.starts_with(prefix),
+        }
+    }
+
+    /// Check if we should stop due to passing the prefix range
+    fn past_prefix_range(&self, key: &[u8]) -> bool {
+        self.prefix.is_some() && self.found_match && !self.matches_prefix(key)
+    }
+
+    /// Get statistics from the diff operation.
+    pub fn get_stats(&self) -> &DiffStats {
+        &self.stats
+    }
+
+    /// Consume the iterator and return final statistics.
+    pub fn into_stats(self) -> DiffStats {
+        self.stats
+    }
+}
+
+/// Compute differences between two trees, returning a streaming iterator.
+///
+/// This is the main entry point for diffing trees. It returns an iterator
+/// that yields `DiffEvent` values lazily as it traverses the trees.
+///
+/// # Arguments
+///
+/// * `store` - Storage backend containing both trees
+/// * `old_hash` - Root hash of the old tree
+/// * `new_hash` - Root hash of the new tree
+/// * `prefix` - Optional key prefix to filter diff results
+///
+/// # Example
+///
+/// ```ignore
+/// for event in diff(store, &old_hash, &new_hash, None) {
+///     match event {
+///         DiffEvent::Added(a) => println!("+ {:?}", a.key),
+///         DiffEvent::Deleted(d) => println!("- {:?}", d.key),
+///         DiffEvent::Modified(m) => println!("M {:?}", m.key),
+///     }
+/// }
+/// ```
+pub fn diff<'a>(
+    store: &'a dyn BlockStore,
+    old_hash: &Hash,
+    new_hash: &Hash,
+    prefix: Option<&[u8]>,
+) -> DiffIterator<'a> {
+    DiffIterator::new(store, old_hash, new_hash, prefix)
+}
+
+impl<'a> Iterator for DiffIterator<'a> {
+    type Item = DiffEvent;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            // Take ownership of state to enable state transitions
+            let state = std::mem::replace(&mut self.state, DiffState::Done);
+
+            match state {
+                DiffState::Done => {
+                    return None;
+                }
+
+                DiffState::DrainNew {
+                    mut new_cursor,
+                    new_entry: (key, value),
+                } => {
+                    // Check prefix early termination
+                    if self.past_prefix_range(&key) {
+                        return None;
+                    }
+
+                    // Advance cursor for next iteration
+                    let next_entry = new_cursor.next();
+                    self.state = match next_entry {
+                        Some(entry) => DiffState::DrainNew {
+                            new_cursor,
+                            new_entry: entry,
+                        },
+                        None => DiffState::Done,
+                    };
+
+                    // Emit addition if it matches prefix
+                    if self.matches_prefix(&key) {
+                        self.found_match = true;
+                        return Some(DiffEvent::Added(Added { key, value }));
+                    }
+                    // Otherwise continue to next entry
+                }
+
+                DiffState::DrainOld {
+                    mut old_cursor,
+                    old_entry: (key, old_value),
+                } => {
+                    // Check prefix early termination
+                    if self.past_prefix_range(&key) {
+                        return None;
+                    }
+
+                    // Advance cursor for next iteration
+                    let next_entry = old_cursor.next();
+                    self.state = match next_entry {
+                        Some(entry) => DiffState::DrainOld {
+                            old_cursor,
+                            old_entry: entry,
+                        },
+                        None => DiffState::Done,
+                    };
+
+                    // Emit deletion if it matches prefix
+                    if self.matches_prefix(&key) {
+                        self.found_match = true;
+                        return Some(DiffEvent::Deleted(Deleted { key, old_value }));
+                    }
+                    // Otherwise continue to next entry
+                }
+
+                DiffState::Comparing {
+                    mut old_cursor,
+                    mut new_cursor,
+                    old_entry: (old_key, old_value),
+                    new_entry: (new_key, new_value),
+                } => {
+                    // Check prefix early termination
+                    if self.prefix.is_some()
+                        && self.found_match
+                        && !self.matches_prefix(&old_key)
+                        && !self.matches_prefix(&new_key)
+                    {
+                        return None;
+                    }
+
+                    // Check for subtree skipping opportunity
+                    let old_next_hash = old_cursor.peek_next_hash();
+                    let new_next_hash = new_cursor.peek_next_hash();
+
+                    if let (Some(ref old_hash), Some(ref new_hash)) =
+                        (&old_next_hash, &new_next_hash)
+                    {
+                        if old_hash == new_hash {
+                            // Same subtree - skip it!
+                            self.stats.subtrees_skipped += 1;
+                            old_cursor.skip_subtree(old_hash);
+                            new_cursor.skip_subtree(new_hash);
+
+                            // Transition to appropriate state
+                            let old_next = old_cursor.next();
+                            let new_next = new_cursor.next();
+                            self.state = match (old_next, new_next) {
+                                (Some(old), Some(new)) => DiffState::Comparing {
+                                    old_cursor,
+                                    new_cursor,
+                                    old_entry: old,
+                                    new_entry: new,
+                                },
+                                (Some(old), None) => DiffState::DrainOld {
+                                    old_cursor,
+                                    old_entry: old,
+                                },
+                                (None, Some(new)) => DiffState::DrainNew {
+                                    new_cursor,
+                                    new_entry: new,
+                                },
+                                (None, None) => DiffState::Done,
+                            };
+                            continue;
+                        }
+                    }
+
+                    // Compare keys
+                    if old_key < new_key {
+                        // Key only in old tree - deletion
+                        let next_old = old_cursor.next();
+                        self.state = match next_old {
+                            Some(entry) => DiffState::Comparing {
+                                old_cursor,
+                                new_cursor,
+                                old_entry: entry,
+                                new_entry: (new_key, new_value),
+                            },
+                            None => DiffState::DrainNew {
+                                new_cursor,
+                                new_entry: (new_key, new_value),
+                            },
+                        };
+
+                        if self.matches_prefix(&old_key) {
+                            self.found_match = true;
+                            return Some(DiffEvent::Deleted(Deleted {
+                                key: old_key,
+                                old_value,
+                            }));
+                        }
+                    } else if old_key > new_key {
+                        // Key only in new tree - addition
+                        let next_new = new_cursor.next();
+                        self.state = match next_new {
+                            Some(entry) => DiffState::Comparing {
+                                old_cursor,
+                                new_cursor,
+                                old_entry: (old_key, old_value),
+                                new_entry: entry,
+                            },
+                            None => DiffState::DrainOld {
+                                old_cursor,
+                                old_entry: (old_key, old_value),
+                            },
+                        };
+
+                        if self.matches_prefix(&new_key) {
+                            self.found_match = true;
+                            return Some(DiffEvent::Added(Added {
+                                key: new_key,
+                                value: new_value,
+                            }));
+                        }
+                    } else {
+                        // Same key - check for modification
+                        let is_modified = old_value != new_value;
+                        let matches = self.matches_prefix(&old_key);
+
+                        // Advance both cursors
+                        let next_old = old_cursor.next();
+                        let next_new = new_cursor.next();
+                        self.state = match (next_old, next_new) {
+                            (Some(old), Some(new)) => DiffState::Comparing {
+                                old_cursor,
+                                new_cursor,
+                                old_entry: old,
+                                new_entry: new,
+                            },
+                            (Some(old), None) => DiffState::DrainOld {
+                                old_cursor,
+                                old_entry: old,
+                            },
+                            (None, Some(new)) => DiffState::DrainNew {
+                                new_cursor,
+                                new_entry: new,
+                            },
+                            (None, None) => DiffState::Done,
+                        };
+
+                        if is_modified && matches {
+                            self.found_match = true;
+                            return Some(DiffEvent::Modified(Modified {
+                                key: old_key,
+                                old_value,
+                                new_value,
+                            }));
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -262,8 +437,7 @@ mod tests {
         let hash1 = tree1.get_root_hash();
         let hash2 = tree2.get_root_hash();
 
-        let mut differ = Differ::new(store.as_ref());
-        let events = differ.diff(&hash1, &hash2, None);
+        let events: Vec<_> = diff(store.as_ref(), &hash1, &hash2, None).collect();
 
         assert_eq!(events.len(), 0);
     }
@@ -285,8 +459,7 @@ mod tests {
         );
         let hash2 = tree2.get_root_hash();
 
-        let mut differ = Differ::new(store.as_ref());
-        let events = differ.diff(&hash1, &hash2, None);
+        let events: Vec<_> = diff(store.as_ref(), &hash1, &hash2, None).collect();
 
         assert_eq!(events.len(), 2);
         match &events[0] {
@@ -315,8 +488,7 @@ mod tests {
         let tree2 = ProllyTree::new(0.01, 42, Some(store.clone()));
         let hash2 = tree2.get_root_hash();
 
-        let mut differ = Differ::new(store.as_ref());
-        let events = differ.diff(&hash1, &hash2, None);
+        let events: Vec<_> = diff(store.as_ref(), &hash1, &hash2, None).collect();
 
         assert_eq!(events.len(), 2);
         match &events[0] {
@@ -340,8 +512,7 @@ mod tests {
         tree2.insert_batch(vec![(b"a".to_vec(), b"val_new".to_vec())], false);
         let hash2 = tree2.get_root_hash();
 
-        let mut differ = Differ::new(store.as_ref());
-        let events = differ.diff(&hash1, &hash2, None);
+        let events: Vec<_> = diff(store.as_ref(), &hash1, &hash2, None).collect();
 
         assert_eq!(events.len(), 1);
         match &events[0] {
@@ -378,8 +549,7 @@ mod tests {
         );
         let hash2 = tree2.get_root_hash();
 
-        let mut differ = Differ::new(store.as_ref());
-        let events = differ.diff(&hash1, &hash2, Some(b"a/"));
+        let events: Vec<_> = diff(store.as_ref(), &hash1, &hash2, Some(b"a/")).collect();
 
         // Should only see the modification under "a/" prefix
         assert_eq!(events.len(), 1);
@@ -399,10 +569,47 @@ mod tests {
         tree1.insert_batch(vec![(b"a".to_vec(), b"val".to_vec())], false);
         let hash = tree1.get_root_hash();
 
-        let mut differ = Differ::new(store.as_ref());
-        let events = differ.diff(&hash, &hash, None);
+        let mut iter = diff(store.as_ref(), &hash, &hash, None);
+        // Exhaust the iterator
+        assert!(iter.next().is_none());
+        // Check stats
+        assert_eq!(iter.get_stats().subtrees_skipped, 1);
+    }
 
-        assert_eq!(events.len(), 0);
-        assert_eq!(differ.get_stats().subtrees_skipped, 1);
+    #[test]
+    fn test_diff_streaming() {
+        // Test that the iterator can be used in streaming fashion
+        let store = Arc::new(MemoryBlockStore::new());
+
+        let tree1 = ProllyTree::new(0.01, 42, Some(store.clone()));
+        let hash1 = tree1.get_root_hash();
+
+        let mut tree2 = ProllyTree::new(0.01, 42, Some(store.clone()));
+        tree2.insert_batch(
+            vec![
+                (b"a".to_vec(), b"val_a".to_vec()),
+                (b"b".to_vec(), b"val_b".to_vec()),
+                (b"c".to_vec(), b"val_c".to_vec()),
+            ],
+            false,
+        );
+        let hash2 = tree2.get_root_hash();
+
+        let mut iter = diff(store.as_ref(), &hash1, &hash2, None);
+
+        // Get first event
+        let first = iter.next();
+        assert!(matches!(first, Some(DiffEvent::Added(_))));
+
+        // Get second event
+        let second = iter.next();
+        assert!(matches!(second, Some(DiffEvent::Added(_))));
+
+        // Get third event
+        let third = iter.next();
+        assert!(matches!(third, Some(DiffEvent::Added(_))));
+
+        // No more events
+        assert!(iter.next().is_none());
     }
 }
