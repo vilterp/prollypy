@@ -1,7 +1,8 @@
 //! Diff algorithm for ProllyTree.
 //!
 //! Efficiently computes differences between two trees by skipping identical subtrees
-//! based on content hashes. Provides a streaming iterator-based API.
+//! based on content hashes. Provides a streaming iterator-based API using an explicit
+//! state machine for clarity.
 
 use std::sync::Arc;
 
@@ -46,46 +47,64 @@ pub struct DiffStats {
     pub nodes_compared: usize,
 }
 
+/// Key-value entry type
+type Entry = (Arc<[u8]>, Arc<[u8]>);
+
+/// State machine for the diff iterator.
+enum DiffState<'a> {
+    /// Both trees have remaining entries to compare
+    Comparing {
+        old_cursor: TreeCursor<'a>,
+        new_cursor: TreeCursor<'a>,
+        old_entry: Entry,
+        new_entry: Entry,
+    },
+    /// New tree exhausted, draining remaining old entries as deletions
+    DrainOld {
+        old_cursor: TreeCursor<'a>,
+        old_entry: Entry,
+    },
+    /// Old tree exhausted, draining remaining new entries as additions
+    DrainNew {
+        new_cursor: TreeCursor<'a>,
+        new_entry: Entry,
+    },
+    /// Iteration complete
+    Done,
+}
+
 /// Streaming iterator for diff events between two trees.
 ///
 /// This iterator yields `DiffEvent` values lazily as it traverses the trees,
 /// allowing consumers to process results incrementally without accumulating
 /// all events in memory.
 ///
+/// The iterator uses an explicit state machine with four states:
+/// - `Comparing`: Both trees have entries, comparing keys
+/// - `DrainOld`: New tree exhausted, emitting deletions
+/// - `DrainNew`: Old tree exhausted, emitting additions
+/// - `Done`: Iteration complete
+///
 /// # Example
 ///
 /// ```ignore
-/// let iter = DiffIterator::new(store, &old_hash, &new_hash, None);
-/// for event in iter {
+/// for event in diff(store, &old_hash, &new_hash, None) {
 ///     match event {
 ///         DiffEvent::Added(a) => println!("+ {:?}", a.key),
 ///         DiffEvent::Deleted(d) => println!("- {:?}", d.key),
 ///         DiffEvent::Modified(m) => println!("M {:?}", m.key),
 ///     }
 /// }
-/// // Get stats after iteration
-/// let stats = iter.get_stats();
 /// ```
 pub struct DiffIterator<'a> {
-    old_cursor: TreeCursor<'a>,
-    new_cursor: TreeCursor<'a>,
-    old_entry: Option<(Arc<[u8]>, Arc<[u8]>)>,
-    new_entry: Option<(Arc<[u8]>, Arc<[u8]>)>,
+    state: DiffState<'a>,
     prefix: Option<Vec<u8>>,
     found_match: bool,
-    done: bool,
     stats: DiffStats,
 }
 
 impl<'a> DiffIterator<'a> {
     /// Create a new diff iterator between two trees.
-    ///
-    /// # Arguments
-    ///
-    /// * `store` - Storage backend containing both trees
-    /// * `old_hash` - Root hash of the old tree
-    /// * `new_hash` - Root hash of the new tree
-    /// * `prefix` - Optional key prefix to filter diff results
     pub fn new(
         store: &'a dyn BlockStore,
         old_hash: &Hash,
@@ -94,17 +113,13 @@ impl<'a> DiffIterator<'a> {
     ) -> Self {
         let mut stats = DiffStats::default();
 
-        // If hashes are the same, trees are identical - mark as done immediately
+        // If hashes are the same, trees are identical
         if old_hash == new_hash {
             stats.subtrees_skipped += 1;
             return DiffIterator {
-                old_cursor: TreeCursor::new(store, old_hash.clone(), prefix),
-                new_cursor: TreeCursor::new(store, new_hash.clone(), prefix),
-                old_entry: None,
-                new_entry: None,
+                state: DiffState::Done,
                 prefix: prefix.map(|p| p.to_vec()),
                 found_match: false,
-                done: true,
                 stats,
             };
         }
@@ -113,18 +128,32 @@ impl<'a> DiffIterator<'a> {
         let mut old_cursor = TreeCursor::new(store, old_hash.clone(), prefix);
         let mut new_cursor = TreeCursor::new(store, new_hash.clone(), prefix);
 
-        // Get first entries
+        // Get first entries and determine initial state
         let old_entry = old_cursor.next();
         let new_entry = new_cursor.next();
 
+        let state = match (old_entry, new_entry) {
+            (Some(old), Some(new)) => DiffState::Comparing {
+                old_cursor,
+                new_cursor,
+                old_entry: old,
+                new_entry: new,
+            },
+            (Some(old), None) => DiffState::DrainOld {
+                old_cursor,
+                old_entry: old,
+            },
+            (None, Some(new)) => DiffState::DrainNew {
+                new_cursor,
+                new_entry: new,
+            },
+            (None, None) => DiffState::Done,
+        };
+
         DiffIterator {
-            old_cursor,
-            new_cursor,
-            old_entry,
-            new_entry,
+            state,
             prefix: prefix.map(|p| p.to_vec()),
             found_match: false,
-            done: false,
             stats,
         }
     }
@@ -137,10 +166,12 @@ impl<'a> DiffIterator<'a> {
         }
     }
 
+    /// Check if we should stop due to passing the prefix range
+    fn past_prefix_range(&self, key: &[u8]) -> bool {
+        self.prefix.is_some() && self.found_match && !self.matches_prefix(key)
+    }
+
     /// Get statistics from the diff operation.
-    ///
-    /// Note: Stats are updated as the iterator progresses. Call this after
-    /// iteration is complete to get the final statistics.
     pub fn get_stats(&self) -> &DiffStats {
         &self.stats
     }
@@ -187,145 +218,203 @@ impl<'a> Iterator for DiffIterator<'a> {
     type Item = DiffEvent;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.done {
-            return None;
-        }
-
         loop {
-            // Check if we're done
-            if self.old_entry.is_none() && self.new_entry.is_none() {
-                self.done = true;
-                return None;
-            }
+            // Take ownership of state to enable state transitions
+            let state = std::mem::replace(&mut self.state, DiffState::Done);
 
-            // Early termination: if we have a prefix and both entries don't match,
-            // and we've already found matches, we're past the prefix range
-            if self.prefix.is_some() {
-                let old_matches = self
-                    .old_entry
-                    .as_ref()
-                    .map(|(k, _)| self.matches_prefix(k))
-                    .unwrap_or(false);
-                let new_matches = self
-                    .new_entry
-                    .as_ref()
-                    .map(|(k, _)| self.matches_prefix(k))
-                    .unwrap_or(false);
-
-                if self.found_match && !old_matches && !new_matches {
-                    // We've passed the prefix range - stop
-                    self.done = true;
+            match state {
+                DiffState::Done => {
                     return None;
                 }
-            }
 
-            // Check for subtree skipping opportunity
-            if self.old_entry.is_some() && self.new_entry.is_some() {
-                let old_next_hash = self.old_cursor.peek_next_hash();
-                let new_next_hash = self.new_cursor.peek_next_hash();
-
-                if let (Some(old_hash), Some(new_hash)) = (&old_next_hash, &new_next_hash) {
-                    if old_hash == new_hash {
-                        // Same subtree coming up - skip it!
-                        self.stats.subtrees_skipped += 1;
-                        self.old_cursor.skip_subtree(old_hash);
-                        self.new_cursor.skip_subtree(new_hash);
-                        self.old_entry = self.old_cursor.next();
-                        self.new_entry = self.new_cursor.next();
-                        continue;
-                    }
-                }
-            }
-
-            match (&self.old_entry, &self.new_entry) {
-                (None, Some((new_key, new_value))) => {
-                    // Only new entries remain - all additions
-                    if self.matches_prefix(new_key) {
-                        self.found_match = true;
-                        let event = DiffEvent::Added(Added {
-                            key: new_key.clone(),
-                            value: new_value.clone(),
-                        });
-                        self.new_entry = self.new_cursor.next();
-                        return Some(event);
-                    } else if self.prefix.is_some() && self.found_match {
-                        // Past prefix range
-                        self.done = true;
+                DiffState::DrainNew {
+                    mut new_cursor,
+                    new_entry: (key, value),
+                } => {
+                    // Check prefix early termination
+                    if self.past_prefix_range(&key) {
                         return None;
                     }
-                    self.new_entry = self.new_cursor.next();
-                }
-                (Some((old_key, old_value)), None) => {
-                    // Only old entries remain - all deletions
-                    if self.matches_prefix(old_key) {
+
+                    // Advance cursor for next iteration
+                    let next_entry = new_cursor.next();
+                    self.state = match next_entry {
+                        Some(entry) => DiffState::DrainNew {
+                            new_cursor,
+                            new_entry: entry,
+                        },
+                        None => DiffState::Done,
+                    };
+
+                    // Emit addition if it matches prefix
+                    if self.matches_prefix(&key) {
                         self.found_match = true;
-                        let event = DiffEvent::Deleted(Deleted {
-                            key: old_key.clone(),
-                            old_value: old_value.clone(),
-                        });
-                        self.old_entry = self.old_cursor.next();
-                        return Some(event);
-                    } else if self.prefix.is_some() && self.found_match {
-                        // Past prefix range
-                        self.done = true;
+                        return Some(DiffEvent::Added(Added { key, value }));
+                    }
+                    // Otherwise continue to next entry
+                }
+
+                DiffState::DrainOld {
+                    mut old_cursor,
+                    old_entry: (key, old_value),
+                } => {
+                    // Check prefix early termination
+                    if self.past_prefix_range(&key) {
                         return None;
                     }
-                    self.old_entry = self.old_cursor.next();
+
+                    // Advance cursor for next iteration
+                    let next_entry = old_cursor.next();
+                    self.state = match next_entry {
+                        Some(entry) => DiffState::DrainOld {
+                            old_cursor,
+                            old_entry: entry,
+                        },
+                        None => DiffState::Done,
+                    };
+
+                    // Emit deletion if it matches prefix
+                    if self.matches_prefix(&key) {
+                        self.found_match = true;
+                        return Some(DiffEvent::Deleted(Deleted { key, old_value }));
+                    }
+                    // Otherwise continue to next entry
                 }
-                (Some((old_key, old_value)), Some((new_key, new_value))) => {
-                    // Both have entries - compare keys
+
+                DiffState::Comparing {
+                    mut old_cursor,
+                    mut new_cursor,
+                    old_entry: (old_key, old_value),
+                    new_entry: (new_key, new_value),
+                } => {
+                    // Check prefix early termination
+                    if self.prefix.is_some()
+                        && self.found_match
+                        && !self.matches_prefix(&old_key)
+                        && !self.matches_prefix(&new_key)
+                    {
+                        return None;
+                    }
+
+                    // Check for subtree skipping opportunity
+                    let old_next_hash = old_cursor.peek_next_hash();
+                    let new_next_hash = new_cursor.peek_next_hash();
+
+                    if let (Some(ref old_hash), Some(ref new_hash)) =
+                        (&old_next_hash, &new_next_hash)
+                    {
+                        if old_hash == new_hash {
+                            // Same subtree - skip it!
+                            self.stats.subtrees_skipped += 1;
+                            old_cursor.skip_subtree(old_hash);
+                            new_cursor.skip_subtree(new_hash);
+
+                            // Transition to appropriate state
+                            let old_next = old_cursor.next();
+                            let new_next = new_cursor.next();
+                            self.state = match (old_next, new_next) {
+                                (Some(old), Some(new)) => DiffState::Comparing {
+                                    old_cursor,
+                                    new_cursor,
+                                    old_entry: old,
+                                    new_entry: new,
+                                },
+                                (Some(old), None) => DiffState::DrainOld {
+                                    old_cursor,
+                                    old_entry: old,
+                                },
+                                (None, Some(new)) => DiffState::DrainNew {
+                                    new_cursor,
+                                    new_entry: new,
+                                },
+                                (None, None) => DiffState::Done,
+                            };
+                            continue;
+                        }
+                    }
+
+                    // Compare keys
                     if old_key < new_key {
-                        // Key only in old tree - deleted
-                        if self.matches_prefix(old_key) {
+                        // Key only in old tree - deletion
+                        let next_old = old_cursor.next();
+                        self.state = match next_old {
+                            Some(entry) => DiffState::Comparing {
+                                old_cursor,
+                                new_cursor,
+                                old_entry: entry,
+                                new_entry: (new_key, new_value),
+                            },
+                            None => DiffState::DrainNew {
+                                new_cursor,
+                                new_entry: (new_key, new_value),
+                            },
+                        };
+
+                        if self.matches_prefix(&old_key) {
                             self.found_match = true;
-                            let event = DiffEvent::Deleted(Deleted {
-                                key: old_key.clone(),
-                                old_value: old_value.clone(),
-                            });
-                            self.old_entry = self.old_cursor.next();
-                            return Some(event);
+                            return Some(DiffEvent::Deleted(Deleted {
+                                key: old_key,
+                                old_value,
+                            }));
                         }
-                        self.old_entry = self.old_cursor.next();
                     } else if old_key > new_key {
-                        // Key only in new tree - added
-                        if self.matches_prefix(new_key) {
+                        // Key only in new tree - addition
+                        let next_new = new_cursor.next();
+                        self.state = match next_new {
+                            Some(entry) => DiffState::Comparing {
+                                old_cursor,
+                                new_cursor,
+                                old_entry: (old_key, old_value),
+                                new_entry: entry,
+                            },
+                            None => DiffState::DrainOld {
+                                old_cursor,
+                                old_entry: (old_key, old_value),
+                            },
+                        };
+
+                        if self.matches_prefix(&new_key) {
                             self.found_match = true;
-                            let event = DiffEvent::Added(Added {
-                                key: new_key.clone(),
-                                value: new_value.clone(),
-                            });
-                            self.new_entry = self.new_cursor.next();
-                            return Some(event);
+                            return Some(DiffEvent::Added(Added {
+                                key: new_key,
+                                value: new_value,
+                            }));
                         }
-                        self.new_entry = self.new_cursor.next();
                     } else {
-                        // Same key in both trees
-                        if old_value != new_value {
-                            // Value changed - modified
-                            if self.matches_prefix(old_key) {
-                                self.found_match = true;
-                                let event = DiffEvent::Modified(Modified {
-                                    key: old_key.clone(),
-                                    old_value: old_value.clone(),
-                                    new_value: new_value.clone(),
-                                });
-                                // Advance both cursors
-                                self.old_entry = self.old_cursor.next();
-                                self.new_entry = self.new_cursor.next();
-                                return Some(event);
-                            }
-                        }
-                        // else: values are identical, no diff event needed
+                        // Same key - check for modification
+                        let is_modified = old_value != new_value;
+                        let matches = self.matches_prefix(&old_key);
 
                         // Advance both cursors
-                        self.old_entry = self.old_cursor.next();
-                        self.new_entry = self.new_cursor.next();
+                        let next_old = old_cursor.next();
+                        let next_new = new_cursor.next();
+                        self.state = match (next_old, next_new) {
+                            (Some(old), Some(new)) => DiffState::Comparing {
+                                old_cursor,
+                                new_cursor,
+                                old_entry: old,
+                                new_entry: new,
+                            },
+                            (Some(old), None) => DiffState::DrainOld {
+                                old_cursor,
+                                old_entry: old,
+                            },
+                            (None, Some(new)) => DiffState::DrainNew {
+                                new_cursor,
+                                new_entry: new,
+                            },
+                            (None, None) => DiffState::Done,
+                        };
+
+                        if is_modified && matches {
+                            self.found_match = true;
+                            return Some(DiffEvent::Modified(Modified {
+                                key: old_key,
+                                old_value,
+                                new_value,
+                            }));
+                        }
                     }
-                }
-                (None, None) => {
-                    // Both exhausted
-                    self.done = true;
-                    return None;
                 }
             }
         }
