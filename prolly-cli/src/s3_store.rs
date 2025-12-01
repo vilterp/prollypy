@@ -70,6 +70,7 @@ impl S3BlockStore {
             let config = aws_sdk_s3::Config::builder()
                 .region(Region::new(region))
                 .credentials_provider(credentials)
+                .behavior_version_latest()
                 .build();
 
             Client::from_conf(config)
