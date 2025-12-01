@@ -158,7 +158,7 @@ impl Node {
                             error_msg.push_str("\n  Children first keys:");
                             for (j, child_hash) in self.values.iter().enumerate() {
                                 let hash_vec = child_hash.to_vec();
-                                if let Some(child) = store.get_node(&hash_vec) {
+                                if let Ok(Some(child)) = store.get_node(&hash_vec) {
                                     if !child.keys.is_empty() {
                                         let first_key = &child.keys[0];
                                         error_msg
@@ -205,11 +205,12 @@ impl Node {
             let child_hash = self.values[child_idx].to_vec();
             let child = store
                 .get_node(&child_hash)
+                .map_err(|e| format!("Failed to get child {}: {}{}", child_idx, e, context_str))?
                 .ok_or_else(|| format!("Child {} not found in store{}", child_idx, context_str))?;
 
             // Get first key from child
             let first_key = self
-                .get_first_key(&child, store)
+                .get_first_key(&child, store)?
                 .ok_or_else(|| format!("Child {} has no keys{}", child_idx, context_str))?;
 
             if separator != &first_key {
@@ -226,17 +227,21 @@ impl Node {
     }
 
     /// Get the first key in a node's subtree.
-    fn get_first_key(&self, node: &Node, store: &dyn BlockStore) -> Option<Arc<[u8]>> {
+    fn get_first_key(&self, node: &Node, store: &dyn BlockStore) -> Result<Option<Arc<[u8]>>, String> {
         if node.is_leaf {
-            node.keys.first().cloned()
+            Ok(node.keys.first().cloned())
         } else {
             // Descend to leftmost child
             if node.values.is_empty() {
-                return None;
+                return Ok(None);
             }
             let child_hash = node.values[0].to_vec();
-            let child = store.get_node(&child_hash)?;
-            self.get_first_key(&child, store)
+            let child = store.get_node(&child_hash)
+                .map_err(|e| format!("Failed to get child node: {}", e))?;
+            match child {
+                Some(c) => self.get_first_key(&c, store),
+                None => Ok(None),
+            }
         }
     }
 
@@ -254,9 +259,11 @@ impl Node {
             let store = store.ok_or("Cannot validate internal node without store")?;
             for child_hash in &self.values {
                 let hash_vec = child_hash.to_vec();
-                let child = store.get_node(&hash_vec).ok_or_else(|| {
-                    format!("Child node {} not found in store", hex::encode(child_hash.as_ref()))
-                })?;
+                let child = store.get_node(&hash_vec)
+                    .map_err(|e| format!("Failed to get child node: {}", e))?
+                    .ok_or_else(|| {
+                        format!("Child node {} not found in store", hex::encode(child_hash.as_ref()))
+                    })?;
                 child.collect_keys(result, Some(store))?;
             }
         }
@@ -383,8 +390,8 @@ mod tests {
         // Store them
         let left_hash = vec![1, 2, 3];
         let right_hash = vec![4, 5, 6];
-        store.put_node(&left_hash, left_leaf);
-        store.put_node(&right_hash, right_leaf);
+        store.put_node(&left_hash, left_leaf).unwrap();
+        store.put_node(&right_hash, right_leaf).unwrap();
 
         // Create internal node with correct separator
         let mut internal = Node::new_internal();
@@ -412,8 +419,8 @@ mod tests {
         // Store them
         let left_hash = vec![1, 2, 3];
         let right_hash = vec![4, 5, 6];
-        store.put_node(&left_hash, left_leaf);
-        store.put_node(&right_hash, right_leaf);
+        store.put_node(&left_hash, left_leaf).unwrap();
+        store.put_node(&right_hash, right_leaf).unwrap();
 
         // Create internal node with WRONG separator
         let mut internal = Node::new_internal();

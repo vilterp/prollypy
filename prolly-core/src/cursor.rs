@@ -65,8 +65,8 @@ impl<'a> TreeCursor<'a> {
     /// * `target` - Target key/prefix to seek to
     fn seek(&mut self, node_hash: &Hash, target: &[u8]) {
         let mut node = match self.store.get_node(node_hash) {
-            Some(n) => n,
-            None => return,
+            Ok(Some(n)) => n,
+            _ => return,
         };
 
         while !node.is_leaf {
@@ -94,8 +94,8 @@ impl<'a> TreeCursor<'a> {
             self.stack.push((node, child_idx));
 
             node = match self.store.get_node(&child_hash) {
-                Some(n) => n,
-                None => return,
+                Ok(Some(n)) => n,
+                _ => return,
             };
         }
 
@@ -114,8 +114,8 @@ impl<'a> TreeCursor<'a> {
     /// Descend to the leftmost leaf starting from node_hash.
     fn descend_to_first(&mut self, node_hash: &Hash) {
         let mut node = match self.store.get_node(node_hash) {
-            Some(n) => n,
-            None => return,
+            Ok(Some(n)) => n,
+            _ => return,
         };
 
         while !node.is_leaf {
@@ -128,8 +128,8 @@ impl<'a> TreeCursor<'a> {
             self.stack.push((node, 0));
 
             node = match self.store.get_node(&child_hash) {
-                Some(n) => n,
-                None => return,
+                Ok(Some(n)) => n,
+                _ => return,
             };
         }
 
@@ -291,7 +291,7 @@ mod tests {
         leaf.values.push(Arc::from(&b"val_b"[..]));
 
         let root_hash = hash_node(&leaf);
-        store.put_node(&root_hash, leaf);
+        store.put_node(&root_hash, leaf).unwrap();
 
         // Test traversal
         let mut cursor = TreeCursor::new(&store as &dyn BlockStore, root_hash, None);
@@ -326,8 +326,8 @@ mod tests {
 
         let left_hash = hash_node(&left_leaf);
         let right_hash = hash_node(&right_leaf);
-        store.put_node(&left_hash, left_leaf);
-        store.put_node(&right_hash, right_leaf);
+        store.put_node(&left_hash, left_leaf).unwrap();
+        store.put_node(&right_hash, right_leaf).unwrap();
 
         // Create internal node
         let mut internal = Node::new_internal();
@@ -336,7 +336,7 @@ mod tests {
         internal.values.push(Arc::from(right_hash));
 
         let root_hash = hash_node(&internal);
-        store.put_node(&root_hash, internal);
+        store.put_node(&root_hash, internal).unwrap();
 
         // Test traversal
         let mut cursor = TreeCursor::new(&store as &dyn BlockStore, root_hash, None);
@@ -366,7 +366,7 @@ mod tests {
         leaf.values.push(Arc::from(&b"val_g"[..]));
 
         let root_hash = hash_node(&leaf);
-        store.put_node(&root_hash, leaf);
+        store.put_node(&root_hash, leaf).unwrap();
 
         // Seek to "d"
         let mut cursor = TreeCursor::new(&store as &dyn BlockStore, root_hash, Some(b"d"));

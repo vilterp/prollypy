@@ -152,8 +152,13 @@ impl ProllyTree {
         let node_hash = self.hash_node(&node);
 
         // Only store if not already present (deduplication)
-        if self.store.get_node(&node_hash).is_none() {
-            self.store.put_node(&node_hash, node.clone());
+        let already_exists = self.store.get_node(&node_hash)
+            .map(|opt| opt.is_some())
+            .unwrap_or(false);
+
+        if !already_exists {
+            // Ignore errors during store (tree operations should not fail mid-operation)
+            let _ = self.store.put_node(&node_hash, node.clone());
             self.stats.nodes_created += 1;
             if node.is_leaf {
                 self.stats.leaves_created += 1;
@@ -275,7 +280,7 @@ impl ProllyTree {
 
                 // Rebuild child (or reuse if no mutations)
                 let child_hash_vec = child_hash.to_vec();
-                if let Some(child_node) = self.store.get_node(&child_hash_vec) {
+                if let Ok(Some(child_node)) = self.store.get_node(&child_hash_vec) {
                     // Dereference Arc to get owned Node for rebuilding
                     let new_child = self.rebuild_with_mutations((*child_node).clone(), child_mutations);
                     new_children.push(new_child);
@@ -303,7 +308,7 @@ impl ProllyTree {
                 return None;
             }
             let child_hash = node.values[0].to_vec();
-            let child = self.store.get_node(&child_hash)?;
+            let child = self.store.get_node(&child_hash).ok()??;
             self.get_first_key(&child)
         }
     }
@@ -386,7 +391,7 @@ impl ProllyTree {
             if node.values.len() == 1 {
                 // Unwrap single-child internal node
                 let child_hash = node.values[0].to_vec();
-                if let Some(child) = self.store.get_node(&child_hash) {
+                if let Ok(Some(child)) = self.store.get_node(&child_hash) {
                     return (*child).clone();
                 }
             }

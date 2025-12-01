@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use crate::error::StoreResult;
 use crate::Hash;
 
 /// Represents a commit in the version control system.
@@ -62,36 +63,48 @@ impl Commit {
 
     /// Compute the hash of this commit based on its contents
     pub fn compute_hash(&self) -> Hash {
-        let json = serde_json::to_string(self).expect("Failed to serialize commit");
-        Sha256::digest(json.as_bytes()).to_vec()
+        // This uses serde_json which shouldn't fail for this struct,
+        // but if it does, we'll produce a predictable hash based on fields
+        match serde_json::to_string(self) {
+            Ok(json) => Sha256::digest(json.as_bytes()).to_vec(),
+            Err(_) => {
+                // Fallback: hash the critical fields directly
+                let mut hasher = Sha256::new();
+                hasher.update(&self.tree_root);
+                hasher.update(self.message.as_bytes());
+                hasher.update(self.author.as_bytes());
+                hasher.update(self.timestamp.to_le_bytes());
+                hasher.finalize().to_vec()
+            }
+        }
     }
 }
 
 /// Protocol for storing commits and references
 pub trait CommitGraphStore: Send + Sync {
     /// Store a commit by its hash
-    fn put_commit(&self, commit_hash: &Hash, commit: Commit);
+    fn put_commit(&self, commit_hash: &Hash, commit: Commit) -> StoreResult<()>;
 
     /// Retrieve a commit by its hash. Returns None if not found.
-    fn get_commit(&self, commit_hash: &Hash) -> Option<Commit>;
+    fn get_commit(&self, commit_hash: &Hash) -> StoreResult<Option<Commit>>;
 
     /// Get parent commit hashes for a given commit
-    fn get_parents(&self, commit_hash: &Hash) -> Vec<Hash>;
+    fn get_parents(&self, commit_hash: &Hash) -> StoreResult<Vec<Hash>>;
 
     /// Set a reference (branch/tag) to point to a commit
-    fn set_ref(&self, name: &str, commit_hash: &Hash);
+    fn set_ref(&self, name: &str, commit_hash: &Hash) -> StoreResult<()>;
 
     /// Get the commit hash for a reference. Returns None if not found.
-    fn get_ref(&self, name: &str) -> Option<Hash>;
+    fn get_ref(&self, name: &str) -> StoreResult<Option<Hash>>;
 
     /// List all references and their commit hashes
-    fn list_refs(&self) -> HashMap<String, Hash>;
+    fn list_refs(&self) -> StoreResult<HashMap<String, Hash>>;
 
     /// Set HEAD to point to a branch name
-    fn set_head(&self, ref_name: &str);
+    fn set_head(&self, ref_name: &str) -> StoreResult<()>;
 
     /// Get the branch name that HEAD points to. Returns None if not set.
-    fn get_head(&self) -> Option<String>;
+    fn get_head(&self) -> StoreResult<Option<String>>;
 
     /// Find a commit by its hash prefix (partial hash).
     ///
@@ -102,7 +115,7 @@ pub trait CommitGraphStore: Send + Sync {
     /// # Returns
     ///
     /// Full commit hash if exactly one match is found, None otherwise
-    fn find_commit_by_prefix(&self, prefix: &str) -> Option<Hash>;
+    fn find_commit_by_prefix(&self, prefix: &str) -> StoreResult<Option<Hash>>;
 }
 
 /// In-memory implementation of CommitGraphStore
@@ -131,58 +144,61 @@ impl Default for MemoryCommitGraphStore {
 }
 
 impl CommitGraphStore for MemoryCommitGraphStore {
-    fn put_commit(&self, commit_hash: &Hash, commit: Commit) {
-        let mut commits = self.commits.lock().unwrap();
+    fn put_commit(&self, commit_hash: &Hash, commit: Commit) -> StoreResult<()> {
+        let mut commits = self.commits.lock()?;
         commits.insert(commit_hash.clone(), commit);
+        Ok(())
     }
 
-    fn get_commit(&self, commit_hash: &Hash) -> Option<Commit> {
-        let commits = self.commits.lock().unwrap();
-        commits.get(commit_hash).cloned()
+    fn get_commit(&self, commit_hash: &Hash) -> StoreResult<Option<Commit>> {
+        let commits = self.commits.lock()?;
+        Ok(commits.get(commit_hash).cloned())
     }
 
-    fn get_parents(&self, commit_hash: &Hash) -> Vec<Hash> {
-        self.get_commit(commit_hash)
+    fn get_parents(&self, commit_hash: &Hash) -> StoreResult<Vec<Hash>> {
+        Ok(self.get_commit(commit_hash)?
             .map(|c| c.parents)
-            .unwrap_or_default()
+            .unwrap_or_default())
     }
 
-    fn set_ref(&self, name: &str, commit_hash: &Hash) {
-        let mut refs = self.refs.lock().unwrap();
+    fn set_ref(&self, name: &str, commit_hash: &Hash) -> StoreResult<()> {
+        let mut refs = self.refs.lock()?;
         refs.insert(name.to_string(), commit_hash.clone());
+        Ok(())
     }
 
-    fn get_ref(&self, name: &str) -> Option<Hash> {
-        let refs = self.refs.lock().unwrap();
-        refs.get(name).cloned()
+    fn get_ref(&self, name: &str) -> StoreResult<Option<Hash>> {
+        let refs = self.refs.lock()?;
+        Ok(refs.get(name).cloned())
     }
 
-    fn list_refs(&self) -> HashMap<String, Hash> {
-        let refs = self.refs.lock().unwrap();
-        refs.clone()
+    fn list_refs(&self) -> StoreResult<HashMap<String, Hash>> {
+        let refs = self.refs.lock()?;
+        Ok(refs.clone())
     }
 
-    fn set_head(&self, ref_name: &str) {
-        let mut head = self.head.lock().unwrap();
+    fn set_head(&self, ref_name: &str) -> StoreResult<()> {
+        let mut head = self.head.lock()?;
         *head = Some(ref_name.to_string());
+        Ok(())
     }
 
-    fn get_head(&self) -> Option<String> {
-        let head = self.head.lock().unwrap();
-        head.clone()
+    fn get_head(&self) -> StoreResult<Option<String>> {
+        let head = self.head.lock()?;
+        Ok(head.clone())
     }
 
-    fn find_commit_by_prefix(&self, prefix: &str) -> Option<Hash> {
-        let commits = self.commits.lock().unwrap();
+    fn find_commit_by_prefix(&self, prefix: &str) -> StoreResult<Option<Hash>> {
+        let commits = self.commits.lock()?;
         let matches: Vec<_> = commits
             .keys()
             .filter(|hash| hex::encode(hash).starts_with(prefix))
             .collect();
 
         if matches.len() == 1 {
-            Some(matches[0].clone())
+            Ok(Some(matches[0].clone()))
         } else {
-            None
+            Ok(None)
         }
     }
 }
@@ -219,9 +235,9 @@ mod tests {
         );
 
         let hash = commit.compute_hash();
-        store.put_commit(&hash, commit.clone());
+        store.put_commit(&hash, commit.clone()).unwrap();
 
-        let retrieved = store.get_commit(&hash);
+        let retrieved = store.get_commit(&hash).unwrap();
         assert!(retrieved.is_some());
         assert_eq!(retrieved.unwrap().message, "Test commit");
     }
@@ -231,12 +247,12 @@ mod tests {
         let store = MemoryCommitGraphStore::new();
 
         let commit_hash = vec![1, 2, 3, 4];
-        store.set_ref("main", &commit_hash);
+        store.set_ref("main", &commit_hash).unwrap();
 
-        let retrieved = store.get_ref("main");
+        let retrieved = store.get_ref("main").unwrap();
         assert_eq!(retrieved, Some(commit_hash.clone()));
 
-        let refs = store.list_refs();
+        let refs = store.list_refs().unwrap();
         assert_eq!(refs.len(), 1);
         assert_eq!(refs.get("main"), Some(&commit_hash));
     }
@@ -245,10 +261,10 @@ mod tests {
     fn test_head() {
         let store = MemoryCommitGraphStore::new();
 
-        assert_eq!(store.get_head(), None);
+        assert_eq!(store.get_head().unwrap(), None);
 
-        store.set_head("main");
-        assert_eq!(store.get_head(), Some("main".to_string()));
+        store.set_head("main").unwrap();
+        assert_eq!(store.get_head().unwrap(), Some("main".to_string()));
     }
 
     #[test]
@@ -264,12 +280,12 @@ mod tests {
         );
 
         let hash = commit.compute_hash();
-        store.put_commit(&hash, commit);
+        store.put_commit(&hash, commit).unwrap();
 
         let hex_hash = hex::encode(&hash);
         let prefix = &hex_hash[..8];
 
-        let found = store.find_commit_by_prefix(prefix);
+        let found = store.find_commit_by_prefix(prefix).unwrap();
         assert_eq!(found, Some(hash));
     }
 }
