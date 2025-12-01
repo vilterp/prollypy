@@ -283,10 +283,10 @@ fn init_repo(repo_path: PathBuf, author: String) -> anyhow::Result<()> {
     let commit_store = Arc::new(SqliteCommitGraphStore::new(&commit_store_path)?);
 
     // Initialize empty repo with initial commit
-    let repo = Repo::init_empty(store, commit_store, author.clone());
+    let repo = Repo::init_empty(store, commit_store, author.clone())?;
 
     // Get the initial commit info
-    let (head_commit, ref_name) = repo.get_head();
+    let (head_commit, ref_name) = repo.get_head()?;
 
     println!("Initialized empty prolly repository in {}", repo_path.display());
     if let Some(commit) = head_commit {
@@ -492,7 +492,7 @@ fn import_sqlite(
     println!("Average: {:.0} rows/sec", total_rows_per_sec);
     println!();
     println!("Root hash: {}", hex::encode(db.get_root_hash()));
-    println!("Total nodes: {}", repo.block_store.count_nodes());
+    println!("Total nodes: {}", repo.block_store.count_nodes()?);
     println!();
 
     // Create a commit for the imported data
@@ -503,7 +503,7 @@ fn import_sqlite(
         total_rows,
         table_names.len()
     );
-    let commit = repo.commit(&root_hash, &commit_message, None, None, None);
+    let commit = repo.commit(&root_hash, &commit_message, None, None, None)?;
     let commit_hash = commit.compute_hash();
 
     println!("Created commit: {}", hex::encode(&commit_hash[..8]));
@@ -520,7 +520,7 @@ fn gc_repo(repo_path: PathBuf, dry_run: bool, cache_size: usize) -> anyhow::Resu
 
     println!();
     println!("Finding reachable tree roots...");
-    let tree_roots = repo.get_reachable_tree_roots();
+    let tree_roots = repo.get_reachable_tree_roots()?;
     println!("Found {} reachable tree roots", tree_roots.len());
 
     println!();
@@ -567,7 +567,7 @@ fn branch_cmd(
     if let Some(branch_name) = name {
         // Create a new branch
         let from_commit = if let Some(from_ref) = from {
-            Some(repo.resolve_ref(&from_ref).ok_or_else(|| {
+            Some(repo.resolve_ref(&from_ref)?.ok_or_else(|| {
                 anyhow::anyhow!("Could not resolve ref: {}", from_ref)
             })?)
         } else {
@@ -579,8 +579,8 @@ fn branch_cmd(
         println!("Created branch: {}", branch_name);
     } else {
         // List all branches
-        let (head_commit, head_ref) = repo.get_head();
-        let branches = repo.list_branches();
+        let (head_commit, head_ref) = repo.get_head()?;
+        let branches = repo.list_branches()?;
 
         if branches.is_empty() {
             println!("No branches found");
@@ -609,7 +609,7 @@ fn checkout_cmd(repo_path: PathBuf, branch: String, cache_size: usize) -> anyhow
     println!("Switched to branch: {}", branch);
 
     // Show commit info
-    let (commit, _) = repo.get_head();
+    let (commit, _) = repo.get_head()?;
     if let Some(commit) = commit {
         println!("Commit: {}", hex::encode(&commit.compute_hash()[..8]));
         println!("Message: {}", commit.message);
@@ -626,7 +626,7 @@ fn log_cmd(
 ) -> anyhow::Result<()> {
     let repo = open_repo(&repo_path, cache_size)?;
 
-    let commits = repo.log(start.as_deref(), max_count);
+    let commits = repo.log(start.as_deref(), max_count)?;
 
     if commits.is_empty() {
         println!("No commits found");
@@ -660,15 +660,15 @@ fn get_key(
 
     // Determine which commit to read from
     let (commit, ref_display) = if let Some(ref_name) = from {
-        let commit_hash = repo.resolve_ref(&ref_name).ok_or_else(|| {
+        let commit_hash = repo.resolve_ref(&ref_name)?.ok_or_else(|| {
             anyhow::anyhow!("Ref '{}' not found", ref_name)
         })?;
-        let commit = repo.commit_graph_store.get_commit(&commit_hash).ok_or_else(|| {
+        let commit = repo.commit_graph_store.get_commit(&commit_hash)?.ok_or_else(|| {
             anyhow::anyhow!("Commit not found")
         })?;
         (commit, ref_name)
     } else {
-        let (head_commit, ref_name) = repo.get_head();
+        let (head_commit, ref_name) = repo.get_head()?;
         let commit = head_commit.ok_or_else(|| {
             anyhow::anyhow!("No commits in repository")
         })?;
@@ -679,7 +679,7 @@ fn get_key(
     let mut tree = ProllyTree::new(commit.pattern, commit.seed as u32, Some(repo.block_store.clone()));
 
     // Try to load the root node. If it doesn't exist (empty tree), use a new empty tree
-    if let Some(root_node) = repo.block_store.get_node(&commit.tree_root) {
+    if let Ok(Some(root_node)) = repo.block_store.get_node(&commit.tree_root) {
         tree.root = (*root_node).clone();
     }
     // else: tree already has an empty root from ProllyTree::new()
@@ -714,7 +714,7 @@ fn set_key(
     let repo = open_repo(&repo_path, cache_size)?;
 
     // Get current HEAD
-    let (head_commit, ref_name) = repo.get_head();
+    let (head_commit, ref_name) = repo.get_head()?;
     let head_commit = head_commit.ok_or_else(|| {
         anyhow::anyhow!("No commits in repository. Use 'prolly init' first.")
     })?;
@@ -723,7 +723,7 @@ fn set_key(
     let mut tree = ProllyTree::new(head_commit.pattern, head_commit.seed as u32, Some(repo.block_store.clone()));
 
     // Try to load the root node. If it doesn't exist (empty tree), use a new empty tree
-    if let Some(root_node) = repo.block_store.get_node(&head_commit.tree_root) {
+    if let Ok(Some(root_node)) = repo.block_store.get_node(&head_commit.tree_root) {
         tree.root = (*root_node).clone();
     }
     // else: tree already has an empty root from ProllyTree::new()
@@ -744,7 +744,7 @@ fn set_key(
         None,
         Some(head_commit.pattern),
         Some(head_commit.seed as u32),
-    );
+    )?;
     let commit_hash = commit.compute_hash();
 
     println!("================================================================================");
@@ -770,15 +770,15 @@ fn dump_cmd(
 
     // Determine which commit to read from
     let (commit, ref_display) = if let Some(ref_name) = from {
-        let commit_hash = repo.resolve_ref(&ref_name).ok_or_else(|| {
+        let commit_hash = repo.resolve_ref(&ref_name)?.ok_or_else(|| {
             anyhow::anyhow!("Ref '{}' not found", ref_name)
         })?;
-        let commit = repo.commit_graph_store.get_commit(&commit_hash).ok_or_else(|| {
+        let commit = repo.commit_graph_store.get_commit(&commit_hash)?.ok_or_else(|| {
             anyhow::anyhow!("Commit not found")
         })?;
         (commit, ref_name)
     } else {
-        let (head_commit, ref_name) = repo.get_head();
+        let (head_commit, ref_name) = repo.get_head()?;
         let commit = head_commit.ok_or_else(|| {
             anyhow::anyhow!("No commits in repository")
         })?;
@@ -794,7 +794,7 @@ fn dump_cmd(
     let mut tree = ProllyTree::new(commit.pattern, commit.seed as u32, Some(repo.block_store.clone()));
 
     // Try to load the root node. If it doesn't exist (empty tree), use a new empty tree
-    if let Some(root_node) = repo.block_store.get_node(&commit.tree_root) {
+    if let Ok(Some(root_node)) = repo.block_store.get_node(&commit.tree_root) {
         tree.root = (*root_node).clone();
     }
 
@@ -846,18 +846,18 @@ fn diff_cmd(
     let new_ref = new.unwrap_or_else(|| "HEAD".to_string());
 
     // Resolve old ref
-    let old_commit_hash = repo.resolve_ref(&old_ref).ok_or_else(|| {
+    let old_commit_hash = repo.resolve_ref(&old_ref)?.ok_or_else(|| {
         anyhow::anyhow!("Ref '{}' not found", old_ref)
     })?;
-    let old_commit = repo.commit_graph_store.get_commit(&old_commit_hash).ok_or_else(|| {
+    let old_commit = repo.commit_graph_store.get_commit(&old_commit_hash)?.ok_or_else(|| {
         anyhow::anyhow!("Commit not found")
     })?;
 
     // Resolve new ref
-    let new_commit_hash = repo.resolve_ref(&new_ref).ok_or_else(|| {
+    let new_commit_hash = repo.resolve_ref(&new_ref)?.ok_or_else(|| {
         anyhow::anyhow!("Ref '{}' not found", new_ref)
     })?;
-    let new_commit = repo.commit_graph_store.get_commit(&new_commit_hash).ok_or_else(|| {
+    let new_commit = repo.commit_graph_store.get_commit(&new_commit_hash)?.ok_or_else(|| {
         anyhow::anyhow!("Commit not found")
     })?;
 
@@ -961,12 +961,12 @@ fn print_tree_cmd(
     let ref_name = from.unwrap_or_else(|| "HEAD".to_string());
 
     // Resolve ref to commit
-    let commit_hash = repo.resolve_ref(&ref_name).ok_or_else(|| {
-        anyhow::anyhow!("Ref '{}' not found", ref_name)
-    })?;
-    let commit = repo.commit_graph_store.get_commit(&commit_hash).ok_or_else(|| {
-        anyhow::anyhow!("Commit not found")
-    })?;
+    let commit_hash = repo.resolve_ref(&ref_name)
+        .map_err(|e| anyhow::anyhow!("{}", e))?
+        .ok_or_else(|| anyhow::anyhow!("Ref '{}' not found", ref_name))?;
+    let commit = repo.commit_graph_store.get_commit(&commit_hash)
+        .map_err(|e| anyhow::anyhow!("{}", e))?
+        .ok_or_else(|| anyhow::anyhow!("Commit not found"))?;
 
     println!("================================================================================");
     println!("TREE STRUCTURE");
@@ -982,11 +982,17 @@ fn print_tree_cmd(
     let mut tree = ProllyTree::new(commit.pattern, commit.seed as u32, Some(repo.block_store.clone()));
 
     // Try to load the root node
-    if let Some(root_node) = repo.block_store.get_node(&commit.tree_root) {
-        tree.root = (*root_node).clone();
-    } else {
-        println!("\nError: Tree root not found in store");
-        return Ok(());
+    match repo.block_store.get_node(&commit.tree_root) {
+        Ok(Some(root_node)) => {
+            tree.root = (*root_node).clone();
+        }
+        Ok(None) => {
+            println!("\nError: Tree root not found in store");
+            return Ok(());
+        }
+        Err(e) => {
+            return Err(anyhow::anyhow!("Error loading tree root: {}", e));
+        }
     }
 
     // Print the tree structure
@@ -1051,7 +1057,7 @@ fn print_tree_recursive(
         let extension = if is_last { "    " } else { "│   " };
         for (i, child_hash) in node.values.iter().enumerate() {
             let hash_vec = child_hash.to_vec();
-            if let Some(child_node) = store.get_node(&hash_vec) {
+            if let Ok(Some(child_node)) = store.get_node(&hash_vec) {
                 let child_is_last = i == node.values.len() - 1;
                 print_tree_recursive(
                     &child_node,
@@ -1090,7 +1096,7 @@ fn push_cmd(
     println!("================================================================================");
     println!("PUSH to {}", remote.url());
     println!("================================================================================");
-    let (_, ref_name) = repo.get_head();
+    let (_, ref_name) = repo.get_head().map_err(|e| anyhow::anyhow!("{}", e))?;
     println!("Branch: {}", ref_name);
     println!("Threads: {}", threads);
 
@@ -1146,7 +1152,7 @@ fn pull_cmd(
     println!("================================================================================");
     println!("PULL from {}", remote.url());
     println!("================================================================================");
-    let (_, ref_name) = repo.get_head();
+    let (_, ref_name) = repo.get_head().map_err(|e| anyhow::anyhow!("{}", e))?;
     println!("Branch: {}", ref_name);
     println!("Threads: {}", threads);
 
@@ -1179,7 +1185,7 @@ fn pull_cmd(
                    progress.done, progress.in_progress, progress.pending);
             std::io::Write::flush(&mut std::io::stdout()).ok();
         })),
-    );
+    ).map_err(|e| anyhow::anyhow!("{}", e))?;
 
     println!(); // Newline after progress display
 
@@ -1199,7 +1205,7 @@ fn pull_cmd(
     }
 
     // Show updated HEAD
-    let (head_commit, ref_name) = repo.get_head();
+    let (head_commit, ref_name) = repo.get_head().map_err(|e| anyhow::anyhow!("{}", e))?;
     if let Some(commit) = head_commit {
         println!();
         println!("HEAD -> {}", ref_name);
@@ -1307,7 +1313,7 @@ mod tests {
         let commit_store_path = repo_path.join("commits.db");
         let commit_store = Arc::new(SqliteCommitGraphStore::new(&commit_store_path).unwrap());
 
-        Repo::init_empty(store, commit_store, "test@example.com".to_string())
+        Repo::init_empty(store, commit_store, "test@example.com".to_string()).unwrap()
     }
 
     #[test]
@@ -1367,11 +1373,11 @@ mod tests {
         repo.commit(&tree_root, "Initial commit", None, None, None);
 
         // Create a new branch
-        let head_commit = repo.resolve_ref("main").unwrap();
+        let head_commit = repo.resolve_ref("main").unwrap().unwrap();
         repo.create_branch("feature", Some(&head_commit)).unwrap();
 
         // List branches
-        let branches = repo.list_branches();
+        let branches = repo.list_branches().unwrap();
         assert_eq!(branches.len(), 2);
         assert!(branches.iter().any(|(name, _)| name == "main"));
         assert!(branches.iter().any(|(name, _)| name == "feature"));
@@ -1397,12 +1403,12 @@ mod tests {
         repo.commit(&tree_root1, "First commit", None, None, None);
 
         // Create a branch and switch to it
-        let main_commit = repo.resolve_ref("main").unwrap();
+        let main_commit = repo.resolve_ref("main").unwrap().unwrap();
         repo.create_branch("develop", Some(&main_commit)).unwrap();
         repo.checkout("develop").unwrap();
 
         // Verify we're on develop
-        let (_, head_ref) = repo.get_head();
+        let (_, head_ref) = repo.get_head().unwrap();
         assert_eq!(head_ref, "develop");
 
         // Create a commit on develop
@@ -1419,11 +1425,11 @@ mod tests {
 
         // Switch back to main
         repo.checkout("main").unwrap();
-        let (_, head_ref) = repo.get_head();
+        let (_, head_ref) = repo.get_head().unwrap();
         assert_eq!(head_ref, "main");
 
         // Main should still point to first commit
-        let (main_commit, _) = repo.get_head();
+        let (main_commit, _) = repo.get_head().unwrap();
         assert_eq!(main_commit.unwrap().message, "First commit");
     }
 
@@ -1447,7 +1453,7 @@ mod tests {
         }
 
         // Get log from HEAD
-        let commits = repo.log(None, None);
+        let commits = repo.log(None, None).unwrap();
         assert_eq!(commits.len(), 4); // 3 commits + initial commit
 
         // Commits should be in reverse chronological order
@@ -1457,7 +1463,7 @@ mod tests {
         assert_eq!(commits[3].1.message, "Initial commit");
 
         // Test with max_count
-        let commits = repo.log(None, Some(2));
+        let commits = repo.log(None, Some(2)).unwrap();
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].1.message, "Commit 3");
         assert_eq!(commits[1].1.message, "Commit 2");
@@ -1484,7 +1490,7 @@ mod tests {
         repo.commit(&tree_root, "Test commit", None, None, None);
 
         // Run GC - should find no garbage since all nodes are reachable
-        let tree_roots = repo.get_reachable_tree_roots();
+        let tree_roots = repo.get_reachable_tree_roots().unwrap();
         let stats = garbage_collect(repo.block_store.as_ref(), &tree_roots, true);
 
         assert_eq!(stats.garbage_nodes, 0);
@@ -1510,15 +1516,15 @@ mod tests {
         orphan_tree.insert_batch(vec![(b"orphan".to_vec(), b"data".to_vec())], false);
         let _orphan_root = orphan_tree.get_root_hash();
 
-        let nodes_before = repo.block_store.count_nodes();
+        let nodes_before = repo.block_store.count_nodes().unwrap();
 
         // Run GC - should find the orphaned nodes
-        let tree_roots = repo.get_reachable_tree_roots();
+        let tree_roots = repo.get_reachable_tree_roots().unwrap();
         let stats = garbage_collect(repo.block_store.as_ref(), &tree_roots, false);
 
         assert!(stats.garbage_nodes > 0, "Should have found garbage nodes");
 
-        let nodes_after = repo.block_store.count_nodes();
+        let nodes_after = repo.block_store.count_nodes().unwrap();
         assert!(nodes_after < nodes_before, "Should have removed nodes");
         assert_eq!(nodes_after, stats.reachable_nodes);
     }
@@ -1540,13 +1546,13 @@ mod tests {
         let mut orphan_tree = ProllyTree::new(0.01, 42, Some(repo.block_store.clone()));
         orphan_tree.insert_batch(vec![(b"orphan".to_vec(), b"data".to_vec())], false);
 
-        let nodes_before = repo.block_store.count_nodes();
+        let nodes_before = repo.block_store.count_nodes().unwrap();
 
         // Run GC in dry-run mode
-        let tree_roots = repo.get_reachable_tree_roots();
+        let tree_roots = repo.get_reachable_tree_roots().unwrap();
         let stats = garbage_collect(repo.block_store.as_ref(), &tree_roots, true);
 
-        let nodes_after = repo.block_store.count_nodes();
+        let nodes_after = repo.block_store.count_nodes().unwrap();
 
         // Dry run should not remove anything
         assert_eq!(nodes_before, nodes_after);
@@ -1570,21 +1576,21 @@ mod tests {
                 false,
             );
             let tree_root = tree.get_root_hash();
-            let commit = repo.commit(&tree_root, &format!("Commit {}", i), None, None, None);
+            let commit = repo.commit(&tree_root, &format!("Commit {}", i), None, None, None).unwrap();
             let commit_hash = commit.compute_hash();
             commits.push(commit_hash);
         }
 
         // Test HEAD resolves to latest commit
-        let head = repo.resolve_ref("HEAD").unwrap();
+        let head = repo.resolve_ref("HEAD").unwrap().unwrap();
         assert_eq!(head, commits[2]); // commits[2] is "Commit 3"
 
         // Test HEAD~1 resolves to parent
-        let head_1 = repo.resolve_ref("HEAD~1").unwrap();
+        let head_1 = repo.resolve_ref("HEAD~1").unwrap().unwrap();
         assert_eq!(head_1, commits[1]);
 
         // Test HEAD~2
-        let head_2 = repo.resolve_ref("HEAD~2").unwrap();
+        let head_2 = repo.resolve_ref("HEAD~2").unwrap().unwrap();
         assert_eq!(head_2, commits[0]);
     }
 
@@ -1607,7 +1613,7 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify branch was created
-        let branches = repo.list_branches();
+        let branches = repo.list_branches().unwrap();
         assert!(branches.iter().any(|(name, _)| name == "feature"));
     }
 
@@ -1625,7 +1631,7 @@ mod tests {
         let tree_root = tree.get_root_hash();
         repo.commit(&tree_root, "Test", None, None, None);
 
-        let main_commit = repo.resolve_ref("main").unwrap();
+        let main_commit = repo.resolve_ref("main").unwrap().unwrap();
         repo.create_branch("develop", Some(&main_commit)).unwrap();
 
         // Use the CLI function to checkout
@@ -1633,7 +1639,7 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify we switched
-        let (_, head_ref) = repo.get_head();
+        let (_, head_ref) = repo.get_head().unwrap();
         assert_eq!(head_ref, "develop");
     }
 
@@ -1654,14 +1660,14 @@ mod tests {
         let mut orphan = ProllyTree::new(0.01, 42, Some(repo.block_store.clone()));
         orphan.insert_batch(vec![(b"orphan".to_vec(), b"data".to_vec())], false);
 
-        let nodes_before = repo.block_store.count_nodes();
+        let nodes_before = repo.block_store.count_nodes().unwrap();
 
         // Run GC via CLI function
         let result = gc_repo(repo_path.clone(), true, 100);
         assert!(result.is_ok());
 
         // Verify dry run didn't remove nodes
-        let nodes_after = repo.block_store.count_nodes();
+        let nodes_after = repo.block_store.count_nodes().unwrap();
         assert_eq!(nodes_before, nodes_after);
     }
 
@@ -1737,7 +1743,7 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify a commit was created
-        let commits = repo.log(None, None);
+        let commits = repo.log(None, None).unwrap();
         assert!(commits.len() >= 2); // Initial commit + set commit
         assert!(commits[0].1.message.contains("Set mykey = myvalue"));
     }
@@ -1750,7 +1756,7 @@ mod tests {
 
         let repo = create_test_repo(&repo_path);
 
-        let commits_before = repo.log(None, None).len();
+        let commits_before = repo.log(None, None).unwrap().len();
 
         // Set a key with custom message
         let result = set_key(
@@ -1763,7 +1769,7 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify a new commit was created
-        let commits_after = repo.log(None, None);
+        let commits_after = repo.log(None, None).unwrap();
         assert_eq!(commits_after.len(), commits_before + 1);
         assert_eq!(commits_after[0].1.message, "Custom message");
     }
@@ -1802,7 +1808,7 @@ mod tests {
         }
 
         // Verify all commits were created
-        let commits = repo.log(None, None);
+        let commits = repo.log(None, None).unwrap();
         assert_eq!(commits.len(), 4); // Initial + 3 sets
         assert!(commits[0].1.message.contains("Set key3 = value3"));
         assert!(commits[1].1.message.contains("Set key2 = value2"));
@@ -1828,7 +1834,7 @@ mod tests {
         .unwrap();
 
         // Create a branch
-        let commit = repo.resolve_ref("main").unwrap();
+        let commit = repo.resolve_ref("main").unwrap().unwrap();
         repo.create_branch("backup", Some(&commit)).unwrap();
 
         // Update the key
@@ -1924,7 +1930,7 @@ mod tests {
         .unwrap();
 
         // Create a branch at this point
-        let commit = repo.resolve_ref("main").unwrap();
+        let commit = repo.resolve_ref("main").unwrap().unwrap();
         repo.create_branch("old", Some(&commit)).unwrap();
 
         // Modify the key
@@ -2040,7 +2046,7 @@ mod tests {
         .unwrap();
 
         // Create a branch - should be identical to main
-        let commit = repo.resolve_ref("main").unwrap();
+        let commit = repo.resolve_ref("main").unwrap().unwrap();
         repo.create_branch("same", Some(&commit)).unwrap();
 
         // Diff identical trees should succeed

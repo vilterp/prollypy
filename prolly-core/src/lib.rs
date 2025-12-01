@@ -5,6 +5,7 @@
 //! This crate provides the core data structures and algorithms for content-addressed,
 //! probabilistic tree structures with efficient diffing and incremental updates.
 
+pub mod error;
 pub mod node;
 pub mod stats;
 pub mod store;
@@ -29,6 +30,7 @@ pub use db::{DB, Table};
 pub use diff::{Added, Deleted, Differ, DiffEvent, DiffStats, Modified};
 pub use store_gc::{GCStats, garbage_collect, find_reachable_nodes, find_garbage_nodes};
 pub use repo::{Repo, PullProgress, PullItemType};
+pub use error::{StoreError, StoreResult};
 
 /// Hash type used throughout the codebase for content addressing
 pub type Hash = Vec<u8>;

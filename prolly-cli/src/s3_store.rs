@@ -2,7 +2,7 @@
 
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::{Credentials, Region};
-use prolly_core::{BlockStore, Commit, Hash, Node, Remote};
+use prolly_core::{BlockStore, Commit, Hash, Node, Remote, StoreError, StoreResult};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
@@ -148,9 +148,9 @@ unsafe impl Send for S3BlockStore {}
 unsafe impl Sync for S3BlockStore {}
 
 impl BlockStore for S3BlockStore {
-    fn put_node(&self, node_hash: &Hash, node: Node) {
+    fn put_node(&self, node_hash: &Hash, node: Node) -> StoreResult<()> {
         let key = self.node_key(node_hash);
-        let data = bincode::serialize(&node).expect("Failed to serialize node");
+        let data = bincode::serialize(&node)?;
 
         let client = self.client.clone();
         let bucket = self.bucket.clone();
@@ -163,20 +163,21 @@ impl BlockStore for S3BlockStore {
                 .body(data.into())
                 .send()
                 .await
-                .ok();
-        });
+                .map_err(|e| StoreError::Network(format!("S3 put_object failed: {}", e)))
+        })?;
 
         // Update cache
-        let mut cache = self.node_cache.lock().unwrap();
+        let mut cache = self.node_cache.lock()?;
         cache.insert(node_hash.clone(), Arc::new(node));
+        Ok(())
     }
 
-    fn get_node(&self, node_hash: &Hash) -> Option<Arc<Node>> {
+    fn get_node(&self, node_hash: &Hash) -> StoreResult<Option<Arc<Node>>> {
         // Check cache first
         {
-            let cache = self.node_cache.lock().unwrap();
+            let cache = self.node_cache.lock()?;
             if let Some(node) = cache.get(node_hash) {
-                return Some(node.clone());
+                return Ok(Some(node.clone()));
             }
         }
 
@@ -185,65 +186,81 @@ impl BlockStore for S3BlockStore {
         let bucket = self.bucket.clone();
 
         let result = self.runtime.block_on(async {
-            client
+            match client
                 .get_object()
                 .bucket(&bucket)
                 .key(&key)
                 .send()
                 .await
-                .ok()
-        });
-
-        if let Some(response) = result {
-            let data = self.runtime.block_on(async {
-                response.body.collect().await.ok().map(|b| b.to_vec())
-            });
-
-            if let Some(data) = data {
-                if let Ok(node) = bincode::deserialize::<Node>(&data) {
-                    let node_arc: Arc<Node> = Arc::new(node);
-                    // Update cache
-                    let mut cache = self.node_cache.lock().unwrap();
-                    cache.insert(node_hash.clone(), node_arc.clone());
-                    return Some(node_arc);
+            {
+                Ok(response) => Ok(Some(response)),
+                Err(e) => {
+                    // Check if it's a "not found" error
+                    let is_not_found = e.as_service_error()
+                        .map(|se| se.is_no_such_key())
+                        .unwrap_or(false);
+                    if is_not_found {
+                        Ok(None)
+                    } else {
+                        Err(StoreError::Network(format!("S3 get_object failed: {}", e)))
+                    }
                 }
             }
-        }
+        })?;
 
-        None
+        let response = match result {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+
+        let data = self.runtime.block_on(async {
+            response.body.collect().await
+                .map(|b| b.to_vec())
+                .map_err(|e| StoreError::Network(format!("S3 read body failed: {}", e)))
+        })?;
+
+        let node: Node = bincode::deserialize(&data)
+            .map_err(|e| StoreError::Deserialization(format!("Failed to deserialize node: {}", e)))?;
+
+        let node_arc: Arc<Node> = Arc::new(node);
+
+        // Update cache
+        let mut cache = self.node_cache.lock()?;
+        cache.insert(node_hash.clone(), node_arc.clone());
+        Ok(Some(node_arc))
     }
 
-    fn delete_node(&self, node_hash: &Hash) -> bool {
+    fn delete_node(&self, node_hash: &Hash) -> StoreResult<bool> {
         let key = self.node_key(node_hash);
         let client = self.client.clone();
         let bucket = self.bucket.clone();
 
-        let result = self.runtime.block_on(async {
+        self.runtime.block_on(async {
             client
                 .delete_object()
                 .bucket(&bucket)
                 .key(&key)
                 .send()
                 .await
-                .ok()
-        });
+                .map_err(|e| StoreError::Network(format!("S3 delete_object failed: {}", e)))
+        })?;
 
         // Remove from cache
-        let mut cache = self.node_cache.lock().unwrap();
+        let mut cache = self.node_cache.lock()?;
         cache.remove(node_hash);
 
-        result.is_some()
+        Ok(true)
     }
 
-    fn list_nodes(&self) -> Vec<Hash> {
+    fn list_nodes(&self) -> StoreResult<Vec<Hash>> {
         let prefix = format!("{}blocks/", self.prefix);
         let client = self.client.clone();
         let bucket = self.bucket.clone();
 
-        let mut nodes = Vec::new();
-
-        self.runtime.block_on(async {
+        let nodes = self.runtime.block_on(async {
+            let mut nodes = Vec::new();
             let mut continuation_token = None;
+
             loop {
                 let mut request = client
                     .list_objects_v2()
@@ -254,38 +271,37 @@ impl BlockStore for S3BlockStore {
                     request = request.continuation_token(token);
                 }
 
-                match request.send().await {
-                    Ok(response) => {
-                        for object in response.contents() {
-                            if let Some(key) = object.key() {
-                                // Extract hash from key like "prefix/blocks/ab/cdef..."
-                                let hash_part = key.strip_prefix(&prefix);
-                                if let Some(hash_str) = hash_part {
-                                    // Remove the "/" between first two chars and rest
-                                    let cleaned: String = hash_str.chars().filter(|c| *c != '/').collect();
-                                    if let Ok(hash) = hex::decode(&cleaned) {
-                                        nodes.push(hash);
-                                    }
-                                }
+                let response = request.send().await
+                    .map_err(|e| StoreError::Network(format!("S3 list_objects failed: {}", e)))?;
+
+                for object in response.contents() {
+                    if let Some(key) = object.key() {
+                        // Extract hash from key like "prefix/blocks/ab/cdef..."
+                        let hash_part = key.strip_prefix(&prefix);
+                        if let Some(hash_str) = hash_part {
+                            // Remove the "/" between first two chars and rest
+                            let cleaned: String = hash_str.chars().filter(|c| *c != '/').collect();
+                            if let Ok(hash) = hex::decode(&cleaned) {
+                                nodes.push(hash);
                             }
                         }
-
-                        if response.is_truncated() == Some(true) {
-                            continuation_token = response.next_continuation_token().map(String::from);
-                        } else {
-                            break;
-                        }
                     }
-                    Err(_) => break,
+                }
+
+                if response.is_truncated() == Some(true) {
+                    continuation_token = response.next_continuation_token().map(String::from);
+                } else {
+                    break;
                 }
             }
-        });
+            Ok::<_, StoreError>(nodes)
+        })?;
 
-        nodes
+        Ok(nodes)
     }
 
-    fn count_nodes(&self) -> usize {
-        self.list_nodes().len()
+    fn count_nodes(&self) -> StoreResult<usize> {
+        Ok(self.list_nodes()?.len())
     }
 }
 
@@ -294,15 +310,15 @@ impl Remote for S3BlockStore {
         format!("s3://{}/{}", self.bucket, self.prefix)
     }
 
-    fn list_refs(&self) -> Vec<String> {
+    fn list_refs(&self) -> StoreResult<Vec<String>> {
         let prefix = format!("{}refs/", self.prefix);
         let client = self.client.clone();
         let bucket = self.bucket.clone();
 
-        let mut refs = Vec::new();
-
-        self.runtime.block_on(async {
+        let refs = self.runtime.block_on(async {
+            let mut refs = Vec::new();
             let mut continuation_token = None;
+
             loop {
                 let mut request = client
                     .list_objects_v2()
@@ -313,31 +329,30 @@ impl Remote for S3BlockStore {
                     request = request.continuation_token(token);
                 }
 
-                match request.send().await {
-                    Ok(response) => {
-                        for object in response.contents() {
-                            if let Some(key) = object.key() {
-                                if let Some(ref_name) = key.strip_prefix(&prefix) {
-                                    refs.push(ref_name.to_string());
-                                }
-                            }
-                        }
+                let response = request.send().await
+                    .map_err(|e| StoreError::Network(format!("S3 list_objects failed: {}", e)))?;
 
-                        if response.is_truncated() == Some(true) {
-                            continuation_token = response.next_continuation_token().map(String::from);
-                        } else {
-                            break;
+                for object in response.contents() {
+                    if let Some(key) = object.key() {
+                        if let Some(ref_name) = key.strip_prefix(&prefix) {
+                            refs.push(ref_name.to_string());
                         }
                     }
-                    Err(_) => break,
+                }
+
+                if response.is_truncated() == Some(true) {
+                    continuation_token = response.next_continuation_token().map(String::from);
+                } else {
+                    break;
                 }
             }
-        });
+            Ok::<_, StoreError>(refs)
+        })?;
 
-        refs
+        Ok(refs)
     }
 
-    fn get_ref_commit(&self, ref_name: &str) -> Option<String> {
+    fn get_ref_commit(&self, ref_name: &str) -> StoreResult<Option<String>> {
         let key = self.ref_key(ref_name);
         let client = self.client.clone();
         let bucket = self.bucket.clone();
@@ -345,52 +360,80 @@ impl Remote for S3BlockStore {
         self.runtime.block_on(async {
             match client.get_object().bucket(&bucket).key(&key).send().await {
                 Ok(response) => {
-                    response.body.collect().await.ok().and_then(|b| {
-                        String::from_utf8(b.to_vec()).ok().map(|s| s.trim().to_string())
-                    })
+                    let data = response.body.collect().await
+                        .map_err(|e| StoreError::Network(format!("S3 read body failed: {}", e)))?;
+                    let s = String::from_utf8(data.to_vec())
+                        .map_err(|e| StoreError::Deserialization(format!("Invalid UTF-8: {}", e)))?;
+                    Ok(Some(s.trim().to_string()))
                 }
-                Err(_) => None,
+                Err(e) => {
+                    let is_not_found = e.as_service_error()
+                        .map(|se| se.is_no_such_key())
+                        .unwrap_or(false);
+                    if is_not_found {
+                        Ok(None)
+                    } else {
+                        Err(StoreError::Network(format!("S3 get_object failed: {}", e)))
+                    }
+                }
             }
         })
     }
 
-    fn update_ref(&self, ref_name: &str, old_hash: Option<&str>, new_hash: &str) -> bool {
+    fn update_ref(&self, ref_name: &str, old_hash: Option<&str>, new_hash: &str) -> StoreResult<()> {
         let key = self.ref_key(ref_name);
         let client = self.client.clone();
         let bucket = self.bucket.clone();
         let new_hash = new_hash.to_string();
+        let ref_name_owned = ref_name.to_string();
+        let old_hash_owned = old_hash.map(|s| s.to_string());
 
         self.runtime.block_on(async {
             // First, check current value if old_hash is specified
-            if let Some(expected_old) = old_hash {
-                match client.get_object().bucket(&bucket).key(&key).send().await {
-                    Ok(response) => {
-                        let current = response.body.collect().await.ok().and_then(|b| {
-                            String::from_utf8(b.to_vec()).ok().map(|s| s.trim().to_string())
-                        });
+            let current_value = match client.get_object().bucket(&bucket).key(&key).send().await {
+                Ok(response) => {
+                    let data = response.body.collect().await
+                        .map_err(|e| StoreError::Network(format!("S3 read body failed: {}", e)))?;
+                    let s = String::from_utf8(data.to_vec())
+                        .map_err(|e| StoreError::Deserialization(format!("Invalid UTF-8: {}", e)))?;
+                    Some(s.trim().to_string())
+                }
+                Err(e) => {
+                    let is_not_found = e.as_service_error()
+                        .map(|se| se.is_no_such_key())
+                        .unwrap_or(false);
+                    if is_not_found {
+                        None
+                    } else {
+                        return Err(StoreError::Network(format!("S3 get_object failed: {}", e)));
+                    }
+                }
+            };
 
-                        if current.as_deref() != Some(expected_old) {
-                            return false;
-                        }
-                    }
-                    Err(e) => {
-                        // If error is NoSuchKey, that's a conflict (expected old but not present)
-                        let is_not_found = e.as_service_error()
-                            .map(|se| se.is_no_such_key())
-                            .unwrap_or(false);
-                        if is_not_found {
-                            return false;
-                        }
-                        // Other errors - return false to be safe
-                        return false;
-                    }
+            // Check CAS condition
+            match (&old_hash_owned, &current_value) {
+                (Some(expected), Some(actual)) if expected != actual => {
+                    return Err(StoreError::RefConflict {
+                        ref_name: ref_name_owned,
+                        expected: old_hash_owned,
+                        actual: current_value,
+                    });
                 }
-            } else {
-                // old_hash is None - ref should not exist
-                match client.head_object().bucket(&bucket).key(&key).send().await {
-                    Ok(_) => return false, // Ref already exists
-                    Err(_) => {} // Good, ref doesn't exist
+                (Some(_), None) => {
+                    return Err(StoreError::RefConflict {
+                        ref_name: ref_name_owned,
+                        expected: old_hash_owned,
+                        actual: None,
+                    });
                 }
+                (None, Some(_)) => {
+                    return Err(StoreError::RefConflict {
+                        ref_name: ref_name_owned,
+                        expected: None,
+                        actual: current_value,
+                    });
+                }
+                _ => {} // Condition matches, proceed with update
             }
 
             // Update the ref
@@ -401,13 +444,15 @@ impl Remote for S3BlockStore {
                 .body(new_hash.into_bytes().into())
                 .send()
                 .await
-                .is_ok()
+                .map_err(|e| StoreError::Network(format!("S3 put_object failed: {}", e)))?;
+
+            Ok(())
         })
     }
 
-    fn put_commit(&self, commit_hash: &Hash, commit: Commit) {
+    fn put_commit(&self, commit_hash: &Hash, commit: Commit) -> StoreResult<()> {
         let key = self.commit_key(commit_hash);
-        let data = serde_json::to_vec(&commit).expect("Failed to serialize commit");
+        let data = serde_json::to_vec(&commit)?;
         let client = self.client.clone();
         let bucket = self.bucket.clone();
 
@@ -419,20 +464,21 @@ impl Remote for S3BlockStore {
                 .body(data.into())
                 .send()
                 .await
-                .ok();
-        });
+                .map_err(|e| StoreError::Network(format!("S3 put_object failed: {}", e)))
+        })?;
 
         // Update cache
-        let mut cache = self.commit_cache.lock().unwrap();
+        let mut cache = self.commit_cache.lock()?;
         cache.insert(commit_hash.clone(), commit);
+        Ok(())
     }
 
-    fn get_commit(&self, commit_hash: &Hash) -> Option<Commit> {
+    fn get_commit(&self, commit_hash: &Hash) -> StoreResult<Option<Commit>> {
         // Check cache first
         {
-            let cache = self.commit_cache.lock().unwrap();
+            let cache = self.commit_cache.lock()?;
             if let Some(commit) = cache.get(commit_hash) {
-                return Some(commit.clone());
+                return Ok(Some(commit.clone()));
             }
         }
 
@@ -443,30 +489,41 @@ impl Remote for S3BlockStore {
         let result = self.runtime.block_on(async {
             match client.get_object().bucket(&bucket).key(&key).send().await {
                 Ok(response) => {
-                    response.body.collect().await.ok().and_then(|b| {
-                        serde_json::from_slice::<Commit>(&b.to_vec()).ok()
-                    })
+                    let data = response.body.collect().await
+                        .map_err(|e| StoreError::Network(format!("S3 read body failed: {}", e)))?;
+                    let commit: Commit = serde_json::from_slice(&data.to_vec())
+                        .map_err(|e| StoreError::Deserialization(format!("Failed to deserialize commit: {}", e)))?;
+                    Ok(Some(commit))
                 }
-                Err(_) => None,
+                Err(e) => {
+                    let is_not_found = e.as_service_error()
+                        .map(|se| se.is_no_such_key())
+                        .unwrap_or(false);
+                    if is_not_found {
+                        Ok(None)
+                    } else {
+                        Err(StoreError::Network(format!("S3 get_object failed: {}", e)))
+                    }
+                }
             }
-        });
+        })?;
 
         if let Some(ref commit) = result {
             // Update cache
-            let mut cache = self.commit_cache.lock().unwrap();
+            let mut cache = self.commit_cache.lock()?;
             cache.insert(commit_hash.clone(), commit.clone());
         }
 
-        result
+        Ok(result)
     }
 
-    fn get_parents(&self, commit_hash: &Hash) -> Vec<Hash> {
-        self.get_commit(commit_hash)
+    fn get_parents(&self, commit_hash: &Hash) -> StoreResult<Vec<Hash>> {
+        Ok(self.get_commit(commit_hash)?
             .map(|c| c.parents)
-            .unwrap_or_default()
+            .unwrap_or_default())
     }
 
-    fn set_ref(&self, name: &str, commit_hash: &Hash) {
+    fn set_ref(&self, name: &str, commit_hash: &Hash) -> StoreResult<()> {
         let key = self.ref_key(name);
         let hex_hash = hex::encode(commit_hash);
         let client = self.client.clone();
@@ -480,12 +537,16 @@ impl Remote for S3BlockStore {
                 .body(hex_hash.into_bytes().into())
                 .send()
                 .await
-                .ok();
-        });
+                .map_err(|e| StoreError::Network(format!("S3 put_object failed: {}", e)))
+        })?;
+
+        Ok(())
     }
 
-    fn get_ref(&self, name: &str) -> Option<Hash> {
-        self.get_ref_commit(name)
-            .and_then(|hex| hex::decode(&hex).ok())
+    fn get_ref(&self, name: &str) -> StoreResult<Option<Hash>> {
+        match self.get_ref_commit(name)? {
+            Some(hex) => Ok(Some(hex::decode(&hex)?)),
+            None => Ok(None),
+        }
     }
 }

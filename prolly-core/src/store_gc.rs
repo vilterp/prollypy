@@ -61,8 +61,8 @@ pub fn find_reachable_nodes(store: &dyn BlockStore, root_hashes: &HashSet<Hash>)
 
         // Get node and traverse children
         let node = match store.get_node(&node_hash) {
-            Some(n) => n,
-            None => continue, // Node not found - skip it
+            Ok(Some(n)) => n,
+            _ => continue, // Node not found or error - skip it
         };
 
         // Mark as reachable (only if node exists)
@@ -96,8 +96,11 @@ pub fn find_garbage_nodes(store: &dyn BlockStore, root_hashes: &HashSet<Hash>) -
     // Find all reachable nodes
     let reachable = find_reachable_nodes(store, root_hashes);
 
-    // Find all nodes in store
-    let all_nodes: HashSet<Hash> = store.list_nodes().into_iter().collect();
+    // Find all nodes in store (ignore errors)
+    let all_nodes: HashSet<Hash> = store.list_nodes()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
 
     // Garbage = all nodes - reachable nodes
     all_nodes.difference(&reachable).cloned().collect()
@@ -116,7 +119,10 @@ pub fn find_garbage_nodes(store: &dyn BlockStore, root_hashes: &HashSet<Hash>) -
 pub fn collect_garbage_stats(store: &dyn BlockStore, root_hashes: &HashSet<Hash>) -> GCStats {
     // Find reachable and all nodes
     let reachable = find_reachable_nodes(store, root_hashes);
-    let all_nodes: HashSet<Hash> = store.list_nodes().into_iter().collect();
+    let all_nodes: HashSet<Hash> = store.list_nodes()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
 
     // Compute statistics
     GCStats {
@@ -143,7 +149,7 @@ pub fn remove_garbage(store: &dyn BlockStore, garbage_hashes: &HashSet<Hash>) ->
     let mut removed_count = 0;
 
     for node_hash in garbage_hashes {
-        if store.delete_node(node_hash) {
+        if store.delete_node(node_hash).unwrap_or(false) {
             removed_count += 1;
         }
     }
@@ -273,7 +279,7 @@ mod tests {
         tree2.insert_batch(vec![(b"x".to_vec(), b"val_x".to_vec())], false);
         let new_root = tree2.get_root_hash();
 
-        let initial_count = store.count_nodes();
+        let initial_count = store.count_nodes().unwrap();
 
         // GC, keeping only new root
         let mut roots = HashSet::new();
@@ -281,7 +287,7 @@ mod tests {
 
         let stats = garbage_collect(store.as_ref(), &roots, false);
 
-        let final_count = store.count_nodes();
+        let final_count = store.count_nodes().unwrap();
 
         assert_eq!(final_count, stats.reachable_nodes);
         assert_eq!(initial_count - final_count, stats.garbage_nodes);
@@ -299,7 +305,7 @@ mod tests {
         tree2.insert_batch(vec![(b"x".to_vec(), b"val_x".to_vec())], false);
         let new_root = tree2.get_root_hash();
 
-        let initial_count = store.count_nodes();
+        let initial_count = store.count_nodes().unwrap();
 
         // Dry run GC
         let mut roots = HashSet::new();
@@ -307,7 +313,7 @@ mod tests {
 
         let stats = garbage_collect(store.as_ref(), &roots, true);
 
-        let final_count = store.count_nodes();
+        let final_count = store.count_nodes().unwrap();
 
         // Dry run should not remove anything
         assert_eq!(initial_count, final_count);
@@ -324,7 +330,7 @@ mod tests {
             block_store.clone(),
             commit_store,
             "test@example.com".to_string(),
-        );
+        ).unwrap();
 
         // Create several commits on main
         for i in 0..3 {
@@ -334,15 +340,15 @@ mod tests {
                 false,
             );
             let new_root = tree.get_root_hash();
-            repo.commit(&new_root, &format!("Commit {}", i), None, None, None);
+            repo.commit(&new_root, &format!("Commit {}", i), None, None, None).unwrap();
         }
 
         // Create a branch from an earlier commit
-        repo.create_branch("old", Some(&repo.resolve_ref("HEAD~2").unwrap()))
+        repo.create_branch("old", Some(&repo.resolve_ref("HEAD~2").unwrap().unwrap()))
             .unwrap();
 
         // GC should keep all nodes reachable from any ref (main and old)
-        let tree_roots = repo.get_reachable_tree_roots();
+        let tree_roots = repo.get_reachable_tree_roots().unwrap();
         let stats = garbage_collect(block_store.as_ref(), &tree_roots, false);
 
         // Should have no garbage since all commits are reachable from refs
@@ -353,13 +359,13 @@ mod tests {
         orphan_tree.insert_batch(vec![(b"orphan".to_vec(), b"data".to_vec())], false);
         let _orphan_root = orphan_tree.get_root_hash();
 
-        let nodes_with_orphan = block_store.count_nodes();
+        let nodes_with_orphan = block_store.count_nodes().unwrap();
 
         // GC should remove the orphan nodes
-        let tree_roots = repo.get_reachable_tree_roots();
+        let tree_roots = repo.get_reachable_tree_roots().unwrap();
         let stats = garbage_collect(block_store.as_ref(), &tree_roots, false);
 
-        let final_count = block_store.count_nodes();
+        let final_count = block_store.count_nodes().unwrap();
 
         // Verify we removed the orphan nodes
         assert!(stats.garbage_nodes > 0, "Should have removed orphan nodes");
