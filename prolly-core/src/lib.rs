@@ -21,14 +21,14 @@ pub mod repo;
 // Re-export commonly used types
 pub use node::Node;
 pub use stats::Stats;
-pub use store::{BlockStore, MemoryBlockStore, FileSystemBlockStore, CachedFSBlockStore};
+pub use store::{BlockStore, MemoryBlockStore, FileSystemBlockStore, CachedFSBlockStore, Remote};
 pub use tree::ProllyTree;
 pub use cursor::TreeCursor;
 pub use commit_graph_store::{Commit, CommitGraphStore, MemoryCommitGraphStore};
 pub use db::{DB, Table};
 pub use diff::{Added, Deleted, Differ, DiffEvent, DiffStats, Modified};
 pub use store_gc::{GCStats, garbage_collect, find_reachable_nodes, find_garbage_nodes};
-pub use repo::Repo;
+pub use repo::{Repo, PullProgress, PullItemType};
 
 /// Hash type used throughout the codebase for content addressing
 pub type Hash = Vec<u8>;

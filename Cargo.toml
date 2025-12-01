@@ -22,5 +22,17 @@ clap = { version = "4.5", features = ["derive"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 chrono = "0.4"
 
+# For S3 and async
+tokio = { version = "1.0", features = ["full"] }
+aws-sdk-s3 = "1.0"
+aws-config = "1.0"
+
+# For config parsing
+toml = "0.8"
+
+# For parallelism
+crossbeam = "0.8"
+num_cpus = "1.16"
+
 # For testing
 proptest = "1.4"

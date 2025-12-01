@@ -4,13 +4,33 @@
 //! Includes commit tracking, branching, and reference management.
 
 use std::collections::{BinaryHeap, HashSet};
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use crossbeam::channel::{self, Receiver, Sender};
 
 use crate::commit_graph_store::{Commit, CommitGraphStore};
-use crate::store::BlockStore;
+use crate::store::{BlockStore, Remote};
 use crate::tree::ProllyTree;
 use crate::Hash;
+
+/// Type of item being pulled
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PullItemType {
+    Commit,
+    Node,
+}
+
+/// Progress event for pull operation
+#[derive(Debug, Clone)]
+pub struct PullProgress {
+    pub done: usize,
+    pub in_progress: usize,
+    pub pending: usize,
+    pub item_type: PullItemType,
+    pub item_hash: Hash,
+}
 
 /// Repository for version-controlled ProllyTrees.
 ///
@@ -427,6 +447,485 @@ impl Repo {
         }
 
         tree_roots
+    }
+
+    /// Collect all node hashes reachable from a tree root.
+    fn collect_node_hashes(&self, tree_root: &Hash) -> HashSet<Hash> {
+        let mut nodes = HashSet::new();
+        let mut stack = vec![tree_root.clone()];
+
+        while let Some(hash) = stack.pop() {
+            if nodes.contains(&hash) {
+                continue;
+            }
+            nodes.insert(hash.clone());
+
+            if let Some(node) = self.block_store.get_node(&hash) {
+                if !node.is_leaf {
+                    // Internal node - add children to stack
+                    for child_hash in &node.values {
+                        stack.push(child_hash.to_vec());
+                    }
+                }
+            }
+        }
+
+        nodes
+    }
+
+    /// Get all nodes that need to be pushed to a remote.
+    ///
+    /// Returns nodes reachable from HEAD but not from base_commit.
+    /// If base_commit is None, returns all nodes reachable from HEAD.
+    ///
+    /// # Arguments
+    ///
+    /// * `base_commit` - Hash of the last commit already in remote (optional)
+    ///
+    /// # Returns
+    ///
+    /// Set of node hashes to push
+    pub fn get_nodes_to_push(&self, base_commit: Option<&Hash>) -> HashSet<Hash> {
+        // Get HEAD commit
+        let (head_commit, _) = self.get_head();
+        let _head_commit = match head_commit {
+            Some(c) => c,
+            None => return HashSet::new(),
+        };
+
+        // Collect all tree roots from HEAD to base_commit
+        let mut new_tree_roots: HashSet<Hash> = HashSet::new();
+        for (commit_hash, commit) in self.log(None, None) {
+            new_tree_roots.insert(commit.tree_root.clone());
+            // If we hit base_commit, stop (don't include it)
+            if let Some(base) = base_commit {
+                if &commit_hash == base {
+                    new_tree_roots.remove(&commit.tree_root);
+                    break;
+                }
+            }
+        }
+
+        // Collect all nodes reachable from new tree roots
+        let mut new_nodes: HashSet<Hash> = HashSet::new();
+        for tree_root in &new_tree_roots {
+            let nodes = self.collect_node_hashes(tree_root);
+            new_nodes.extend(nodes);
+        }
+
+        // If base_commit specified, subtract nodes reachable from it
+        if let Some(base) = base_commit {
+            if self.get_commit(base).is_some() {
+                // Collect all tree roots reachable from base_commit
+                let mut base_tree_roots: HashSet<Hash> = HashSet::new();
+                for (_, commit) in self.log(Some(&hex::encode(base)), None) {
+                    base_tree_roots.insert(commit.tree_root);
+                }
+
+                // Collect all nodes reachable from base
+                let mut base_nodes: HashSet<Hash> = HashSet::new();
+                for tree_root in &base_tree_roots {
+                    let nodes = self.collect_node_hashes(tree_root);
+                    base_nodes.extend(nodes);
+                }
+
+                // Subtract to get nodes to push
+                new_nodes = new_nodes.difference(&base_nodes).cloned().collect();
+            }
+        }
+
+        new_nodes
+    }
+
+    /// Push nodes to a remote store using parallel uploads.
+    ///
+    /// Automatically determines which nodes to push by checking the remote's
+    /// ref for the current branch. After pushing, updates the remote's ref.
+    ///
+    /// # Arguments
+    ///
+    /// * `remote` - Remote block store to push nodes to
+    /// * `threads` - Number of parallel upload threads (default: 50)
+    /// * `progress_callback` - Optional callback for progress updates
+    ///
+    /// # Returns
+    ///
+    /// Total number of nodes pushed, or error
+    pub fn push<R: Remote + 'static>(
+        &self,
+        remote: Arc<R>,
+        threads: usize,
+        mut progress_callback: Option<Box<dyn FnMut(usize, usize) + Send>>,
+    ) -> crate::Result<usize> {
+        let threads = if threads == 0 { 50 } else { threads };
+
+        // Get current branch and HEAD commit
+        let (head_commit, ref_name) = self.get_head();
+        let head_commit = match head_commit {
+            Some(c) => c,
+            None => return Ok(0),
+        };
+        let head_hash = head_commit.compute_hash();
+
+        // Check what commit this branch is at on the remote
+        let remote_commit_hex = remote.get_ref_commit(&ref_name);
+        let base_commit = remote_commit_hex.as_ref().and_then(|hex| hex::decode(hex).ok());
+
+        // Get nodes to push
+        let nodes_to_push: Vec<Hash> = self.get_nodes_to_push(base_commit.as_ref()).into_iter().collect();
+        let total = nodes_to_push.len();
+
+        if total == 0 {
+            return Ok(0);
+        }
+
+        // Create channels for work distribution
+        let (tx, rx): (Sender<Hash>, Receiver<Hash>) = channel::bounded(threads * 2);
+        let (done_tx, done_rx): (Sender<Hash>, Receiver<Hash>) = channel::unbounded();
+
+        // Clone block_store for workers
+        let block_store = self.block_store.clone();
+
+        // Spawn worker threads
+        let mut handles = Vec::new();
+        for _ in 0..threads {
+            let rx = rx.clone();
+            let done_tx = done_tx.clone();
+            let remote = remote.clone();
+            let block_store = block_store.clone();
+
+            let handle = thread::spawn(move || {
+                while let Ok(node_hash) = rx.recv() {
+                    if let Some(node) = block_store.get_node(&node_hash) {
+                        remote.put_node(&node_hash, (*node).clone());
+                    }
+                    let _ = done_tx.send(node_hash);
+                }
+            });
+            handles.push(handle);
+        }
+
+        // Drop extra receivers
+        drop(rx);
+        drop(done_tx);
+
+        // Send work items
+        let nodes_to_push_clone = nodes_to_push.clone();
+        let sender_handle = thread::spawn(move || {
+            for node_hash in nodes_to_push_clone {
+                if tx.send(node_hash).is_err() {
+                    break;
+                }
+            }
+        });
+
+        // Collect results
+        let mut pushed = 0;
+        while let Ok(_hash) = done_rx.recv() {
+            pushed += 1;
+            if let Some(ref mut cb) = progress_callback {
+                cb(pushed, total);
+            }
+        }
+
+        // Wait for sender to complete
+        let _ = sender_handle.join();
+
+        // Wait for all workers to complete
+        for handle in handles {
+            let _ = handle.join();
+        }
+
+        // Push commits to the remote
+        for (commit_hash, commit) in self.log(None, None) {
+            remote.put_commit(&commit_hash, commit.clone());
+            // If we hit base_commit, stop (it's already on remote)
+            if let Some(ref base) = base_commit {
+                if &commit_hash == base {
+                    break;
+                }
+            }
+        }
+
+        // After all nodes and commits are pushed, update the remote's ref with CAS
+        let head_hash_hex = hex::encode(&head_hash);
+        if !remote.update_ref(&ref_name, remote_commit_hex.as_deref(), &head_hash_hex) {
+            return Err(format!(
+                "Failed to update ref '{}': concurrent push detected. Expected {:?}, but remote has changed.",
+                ref_name,
+                remote_commit_hex.as_ref().map(|h| &h[..8])
+            ).into());
+        }
+
+        Ok(pushed)
+    }
+
+    /// Pull nodes from a remote store using parallel downloads.
+    ///
+    /// Discovers and downloads commits and nodes concurrently using a queue-based
+    /// approach. Returns progress events as items are downloaded.
+    ///
+    /// # Arguments
+    ///
+    /// * `remote` - Remote block store to pull nodes from
+    /// * `threads` - Number of parallel download threads (default: 50)
+    ///
+    /// # Returns
+    ///
+    /// Vector of progress events
+    pub fn pull<R: Remote + 'static>(
+        &self,
+        remote: Arc<R>,
+        threads: usize,
+    ) -> Vec<PullProgress> {
+        let threads = if threads == 0 { 50 } else { threads };
+
+        // Get current branch
+        let (_, ref_name) = self.get_head();
+
+        // Get local commit for this ref
+        let local_commit = self.commit_graph_store.get_ref(&ref_name);
+
+        // Get remote commit
+        let remote_commit_hex = match remote.get_ref_commit(&ref_name) {
+            Some(hex) => hex,
+            None => return vec![],
+        };
+
+        let remote_commit_hash = match hex::decode(&remote_commit_hex) {
+            Ok(hash) => hash,
+            Err(_) => return vec![],
+        };
+
+        // If already up to date, nothing to do
+        if let Some(ref local) = local_commit {
+            if local == &remote_commit_hash {
+                return vec![];
+            }
+        }
+
+        // Queue items: (item_type, item_hash)
+        let queue: Arc<Mutex<Vec<(PullItemType, Hash)>>> = Arc::new(Mutex::new(Vec::new()));
+
+        // Track state with thread safety
+        let queued: Arc<Mutex<HashSet<Hash>>> = Arc::new(Mutex::new(HashSet::new()));
+        let in_progress: Arc<Mutex<HashSet<Hash>>> = Arc::new(Mutex::new(HashSet::new()));
+        let done: Arc<Mutex<HashSet<Hash>>> = Arc::new(Mutex::new(HashSet::new()));
+        let commits_downloaded: Arc<Mutex<Vec<(Hash, Commit)>>> = Arc::new(Mutex::new(Vec::new()));
+
+        // Results channel
+        let (results_tx, results_rx): (Sender<PullProgress>, Receiver<PullProgress>) = channel::unbounded();
+
+        let block_store = self.block_store.clone();
+        let commit_graph_store = self.commit_graph_store.clone();
+
+        // Helper to check if we have an item locally
+        let have_locally = {
+            let block_store = block_store.clone();
+            let commit_graph_store = commit_graph_store.clone();
+            move |item_type: PullItemType, item_hash: &Hash| -> bool {
+                match item_type {
+                    PullItemType::Commit => commit_graph_store.get_commit(item_hash).is_some(),
+                    PullItemType::Node => block_store.get_node(item_hash).is_some(),
+                }
+            }
+        };
+
+        // Helper to enqueue an item
+        let enqueue = {
+            let queue = queue.clone();
+            let queued = queued.clone();
+            let done = done.clone();
+            let have_locally = have_locally.clone();
+            move |item_type: PullItemType, item_hash: Hash| {
+                let mut queued_lock = queued.lock().unwrap();
+                let done_lock = done.lock().unwrap();
+                if queued_lock.contains(&item_hash) || done_lock.contains(&item_hash) {
+                    return;
+                }
+                if have_locally(item_type, &item_hash) {
+                    drop(done_lock);
+                    let mut done_lock = done.lock().unwrap();
+                    done_lock.insert(item_hash);
+                    return;
+                }
+                queued_lock.insert(item_hash.clone());
+                drop(queued_lock);
+                drop(done_lock);
+                let mut queue_lock = queue.lock().unwrap();
+                queue_lock.push((item_type, item_hash));
+            }
+        };
+
+        // Start with remote commit
+        enqueue(PullItemType::Commit, remote_commit_hash.clone());
+
+        // Spawn worker threads
+        let mut handles = Vec::new();
+
+        for _ in 0..threads {
+            let queue = queue.clone();
+            let queued = queued.clone();
+            let in_progress = in_progress.clone();
+            let done = done.clone();
+            let commits_downloaded = commits_downloaded.clone();
+            let results_tx = results_tx.clone();
+            let remote = remote.clone();
+            let block_store = block_store.clone();
+            let local_commit = local_commit.clone();
+
+            // Clone enqueue helper values for the worker
+            let queue_for_enqueue = queue.clone();
+            let queued_for_enqueue = queued.clone();
+            let done_for_enqueue = done.clone();
+            let have_locally = have_locally.clone();
+
+            let handle = thread::spawn(move || {
+                loop {
+                    // Try to get work
+                    let work = {
+                        let mut queue_lock = queue.lock().unwrap();
+                        queue_lock.pop()
+                    };
+
+                    let (item_type, item_hash) = match work {
+                        Some(w) => w,
+                        None => {
+                            // Check if we should stop
+                            let in_progress_lock = in_progress.lock().unwrap();
+                            let queue_lock = queue.lock().unwrap();
+                            if in_progress_lock.is_empty() && queue_lock.is_empty() {
+                                return;
+                            }
+                            drop(in_progress_lock);
+                            drop(queue_lock);
+                            thread::sleep(Duration::from_millis(10));
+                            continue;
+                        }
+                    };
+
+                    {
+                        let mut in_progress_lock = in_progress.lock().unwrap();
+                        in_progress_lock.insert(item_hash.clone());
+                    }
+
+                    match item_type {
+                        PullItemType::Commit => {
+                            // Download commit
+                            if let Some(commit) = remote.get_commit(&item_hash) {
+                                {
+                                    let mut commits_lock = commits_downloaded.lock().unwrap();
+                                    commits_lock.push((item_hash.clone(), commit.clone()));
+                                }
+
+                                // Enqueue parents we don't have
+                                for parent_hash in &commit.parents {
+                                    if local_commit.as_ref() != Some(parent_hash) {
+                                        // Enqueue parent
+                                        let mut queued_lock = queued_for_enqueue.lock().unwrap();
+                                        let done_lock = done_for_enqueue.lock().unwrap();
+                                        if !queued_lock.contains(parent_hash) && !done_lock.contains(parent_hash) {
+                                            if !have_locally(PullItemType::Commit, parent_hash) {
+                                                queued_lock.insert(parent_hash.clone());
+                                                drop(queued_lock);
+                                                drop(done_lock);
+                                                let mut queue_lock = queue_for_enqueue.lock().unwrap();
+                                                queue_lock.push((PullItemType::Commit, parent_hash.clone()));
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Enqueue tree root
+                                {
+                                    let mut queued_lock = queued_for_enqueue.lock().unwrap();
+                                    let done_lock = done_for_enqueue.lock().unwrap();
+                                    if !queued_lock.contains(&commit.tree_root) && !done_lock.contains(&commit.tree_root) {
+                                        if !have_locally(PullItemType::Node, &commit.tree_root) {
+                                            queued_lock.insert(commit.tree_root.clone());
+                                            drop(queued_lock);
+                                            drop(done_lock);
+                                            let mut queue_lock = queue_for_enqueue.lock().unwrap();
+                                            queue_lock.push((PullItemType::Node, commit.tree_root.clone()));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        PullItemType::Node => {
+                            // Download node
+                            if let Some(node) = remote.get_node(&item_hash) {
+                                block_store.put_node(&item_hash, (*node).clone());
+
+                                // If internal node, enqueue children
+                                if !node.is_leaf {
+                                    for child_hash in &node.values {
+                                        let child_vec = child_hash.to_vec();
+                                        let mut queued_lock = queued_for_enqueue.lock().unwrap();
+                                        let done_lock = done_for_enqueue.lock().unwrap();
+                                        if !queued_lock.contains(&child_vec) && !done_lock.contains(&child_vec) {
+                                            if !have_locally(PullItemType::Node, &child_vec) {
+                                                queued_lock.insert(child_vec.clone());
+                                                drop(queued_lock);
+                                                drop(done_lock);
+                                                let mut queue_lock = queue_for_enqueue.lock().unwrap();
+                                                queue_lock.push((PullItemType::Node, child_vec));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Update done state
+                    {
+                        let mut in_progress_lock = in_progress.lock().unwrap();
+                        let mut done_lock = done.lock().unwrap();
+                        in_progress_lock.remove(&item_hash);
+                        done_lock.insert(item_hash.clone());
+
+                        let progress = PullProgress {
+                            done: done_lock.len(),
+                            in_progress: in_progress_lock.len(),
+                            pending: queue.lock().unwrap().len(),
+                            item_type,
+                            item_hash: item_hash.clone(),
+                        };
+                        let _ = results_tx.send(progress);
+                    }
+                }
+            });
+            handles.push(handle);
+        }
+
+        // Drop extra sender
+        drop(results_tx);
+
+        // Collect results
+        let mut results = Vec::new();
+        while let Ok(progress) = results_rx.recv() {
+            results.push(progress);
+        }
+
+        // Wait for all workers to complete
+        for handle in handles {
+            let _ = handle.join();
+        }
+
+        // Store commits locally (in order from oldest to newest)
+        {
+            let mut commits_lock = commits_downloaded.lock().unwrap();
+            commits_lock.sort_by(|a, b| a.1.timestamp.partial_cmp(&b.1.timestamp).unwrap());
+            for (commit_hash, commit) in commits_lock.iter() {
+                self.commit_graph_store.put_commit(commit_hash, commit.clone());
+            }
+        }
+
+        // Update local ref to the remote's commit
+        self.commit_graph_store.set_ref(&ref_name, &remote_commit_hash);
+
+        results
     }
 }
 

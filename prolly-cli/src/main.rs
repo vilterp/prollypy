@@ -1,9 +1,11 @@
 mod sqlite_commit_store;
+mod s3_store;
 
 use clap::{Parser, Subcommand};
-use prolly_core::{garbage_collect, BlockStore, CachedFSBlockStore, ProllyTree, TreeCursor, DB, Repo, Differ, DiffEvent};
+use prolly_core::{garbage_collect, BlockStore, CachedFSBlockStore, ProllyTree, TreeCursor, DB, Repo, Differ, DiffEvent, PullItemType, Remote};
 use rusqlite::Connection;
 use sqlite_commit_store::SqliteCommitGraphStore;
+use s3_store::S3BlockStore;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -215,6 +217,44 @@ enum Commands {
         /// Verbose mode - show all leaf node values
         #[arg(short, long)]
         verbose: bool,
+
+        /// Cache size for block store
+        #[arg(short, long, default_value = "10000")]
+        cache_size: usize,
+    },
+
+    /// Push commits and nodes to a remote S3 store
+    Push {
+        /// Path to prolly repository
+        #[arg(short, long, default_value = ".prolly")]
+        repo: PathBuf,
+
+        /// Remote name in config file (default: origin)
+        #[arg(short = 'n', long, default_value = "origin")]
+        remote_name: String,
+
+        /// Number of parallel upload threads (default: 50)
+        #[arg(short, long, default_value = "50")]
+        threads: usize,
+
+        /// Cache size for block store
+        #[arg(short, long, default_value = "10000")]
+        cache_size: usize,
+    },
+
+    /// Pull commits and nodes from a remote S3 store
+    Pull {
+        /// Path to prolly repository
+        #[arg(short, long, default_value = ".prolly")]
+        repo: PathBuf,
+
+        /// Remote name in config file (default: origin)
+        #[arg(short = 'n', long, default_value = "origin")]
+        remote_name: String,
+
+        /// Number of parallel download threads (default: 50)
+        #[arg(short, long, default_value = "50")]
+        threads: usize,
 
         /// Cache size for block store
         #[arg(short, long, default_value = "10000")]
@@ -1027,6 +1067,123 @@ fn print_tree_recursive(
     }
 }
 
+fn push_cmd(
+    repo_path: PathBuf,
+    remote_name: String,
+    threads: usize,
+    cache_size: usize,
+) -> anyhow::Result<()> {
+    let repo = open_repo(&repo_path, cache_size)?;
+
+    // Load config from repo
+    let config_path = repo_path.join("config.toml");
+    if !config_path.exists() {
+        return Err(anyhow::anyhow!(
+            "Config file not found at {}. Create a config.toml with remote configuration.",
+            config_path.display()
+        ));
+    }
+
+    // Create S3 remote from config
+    let remote = Arc::new(S3BlockStore::from_config(&config_path, &remote_name)?);
+
+    println!("================================================================================");
+    println!("PUSH to {}", remote.url());
+    println!("================================================================================");
+    let (_, ref_name) = repo.get_head();
+    println!("Branch: {}", ref_name);
+    println!("Threads: {}", threads);
+
+    let start = Instant::now();
+
+    // Push with progress callback
+    let pushed = repo.push(
+        remote.clone(),
+        threads,
+        Some(Box::new(|done, total| {
+            if done % 100 == 0 || done == total {
+                print!("\rPushing nodes: {}/{} ({:.1}%)", done, total, (done as f64 / total as f64) * 100.0);
+                std::io::Write::flush(&mut std::io::stdout()).ok();
+            }
+        })),
+    ).map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    let elapsed = start.elapsed();
+
+    println!();
+    println!("================================================================================");
+    println!("Push complete!");
+    println!("Nodes pushed: {}", pushed);
+    println!("Time: {:.2}s", elapsed.as_secs_f64());
+    if pushed > 0 {
+        println!("Rate: {:.0} nodes/sec", pushed as f64 / elapsed.as_secs_f64());
+    }
+    println!("================================================================================");
+
+    Ok(())
+}
+
+fn pull_cmd(
+    repo_path: PathBuf,
+    remote_name: String,
+    threads: usize,
+    cache_size: usize,
+) -> anyhow::Result<()> {
+    let repo = open_repo(&repo_path, cache_size)?;
+
+    // Load config from repo
+    let config_path = repo_path.join("config.toml");
+    if !config_path.exists() {
+        return Err(anyhow::anyhow!(
+            "Config file not found at {}. Create a config.toml with remote configuration.",
+            config_path.display()
+        ));
+    }
+
+    // Create S3 remote from config
+    let remote = Arc::new(S3BlockStore::from_config(&config_path, &remote_name)?);
+
+    println!("================================================================================");
+    println!("PULL from {}", remote.url());
+    println!("================================================================================");
+    let (_, ref_name) = repo.get_head();
+    println!("Branch: {}", ref_name);
+    println!("Threads: {}", threads);
+
+    let start = Instant::now();
+
+    // Pull and collect progress
+    let progress = repo.pull(remote.clone(), threads);
+
+    let elapsed = start.elapsed();
+
+    // Count commits and nodes
+    let commits_pulled = progress.iter().filter(|p| p.item_type == PullItemType::Commit).count();
+    let nodes_pulled = progress.iter().filter(|p| p.item_type == PullItemType::Node).count();
+
+    println!("================================================================================");
+    println!("Pull complete!");
+    println!("Commits pulled: {}", commits_pulled);
+    println!("Nodes pulled: {}", nodes_pulled);
+    println!("Total items: {}", progress.len());
+    println!("Time: {:.2}s", elapsed.as_secs_f64());
+    if !progress.is_empty() {
+        println!("Rate: {:.0} items/sec", progress.len() as f64 / elapsed.as_secs_f64());
+    }
+
+    // Show updated HEAD
+    let (head_commit, ref_name) = repo.get_head();
+    if let Some(commit) = head_commit {
+        println!();
+        println!("HEAD -> {}", ref_name);
+        println!("Commit: {}", hex::encode(&commit.compute_hash()[..8]));
+        println!("Message: {}", commit.message);
+    }
+    println!("================================================================================");
+
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
@@ -1094,6 +1251,18 @@ fn main() -> anyhow::Result<()> {
             verbose,
             cache_size,
         } => print_tree_cmd(repo, from, verbose, cache_size)?,
+        Commands::Push {
+            repo,
+            remote_name,
+            threads,
+            cache_size,
+        } => push_cmd(repo, remote_name, threads, cache_size)?,
+        Commands::Pull {
+            repo,
+            remote_name,
+            threads,
+            cache_size,
+        } => pull_cmd(repo, remote_name, threads, cache_size)?,
     }
 
     Ok(())
