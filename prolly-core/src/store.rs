@@ -463,6 +463,40 @@ pub fn create_store_from_spec(
     }
 }
 
+/// Protocol for remote storage that tracks refs and commits.
+/// Extends BlockStore with remote-specific methods.
+pub trait Remote: BlockStore {
+    /// Get the URL/identifier for this remote
+    fn url(&self) -> String;
+
+    /// List all refs on the remote
+    fn list_refs(&self) -> Vec<String>;
+
+    /// Get the commit hash for a ref. Returns None if ref doesn't exist.
+    fn get_ref_commit(&self, ref_name: &str) -> Option<String>;
+
+    /// Update a ref with CAS semantics.
+    /// Only updates if the current value matches old_hash.
+    /// old_hash=None means the ref should not exist (create new).
+    /// Returns True if update succeeded, False if there was a conflict.
+    fn update_ref(&self, ref_name: &str, old_hash: Option<&str>, new_hash: &str) -> bool;
+
+    /// Store a commit by its hash
+    fn put_commit(&self, commit_hash: &Hash, commit: crate::commit_graph_store::Commit);
+
+    /// Retrieve a commit by its hash. Returns None if not found.
+    fn get_commit(&self, commit_hash: &Hash) -> Option<crate::commit_graph_store::Commit>;
+
+    /// Get parent commit hashes for a given commit
+    fn get_parents(&self, commit_hash: &Hash) -> Vec<Hash>;
+
+    /// Set a reference to point to a commit
+    fn set_ref(&self, name: &str, commit_hash: &Hash);
+
+    /// Get the commit hash for a reference. Returns None if not found.
+    fn get_ref(&self, name: &str) -> Option<Hash>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
