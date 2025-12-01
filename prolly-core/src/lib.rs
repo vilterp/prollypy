@@ -27,7 +27,7 @@ pub use tree::ProllyTree;
 pub use cursor::TreeCursor;
 pub use commit_graph_store::{Commit, CommitGraphStore, MemoryCommitGraphStore};
 pub use db::{DB, Table};
-pub use diff::{Added, Deleted, Differ, DiffEvent, DiffStats, Modified};
+pub use diff::{diff, Added, Deleted, DiffEvent, DiffIterator, DiffStats, Modified};
 pub use store_gc::{GCStats, garbage_collect, find_reachable_nodes, find_garbage_nodes};
 pub use repo::{Repo, PullProgress, PullItemType};
 pub use error::{StoreError, StoreResult};

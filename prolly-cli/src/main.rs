@@ -2,7 +2,7 @@ mod sqlite_commit_store;
 mod s3_store;
 
 use clap::{Parser, Subcommand};
-use prolly_core::{garbage_collect, BlockStore, CachedFSBlockStore, ProllyTree, TreeCursor, DB, Repo, Differ, DiffEvent, PullItemType, Remote};
+use prolly_core::{garbage_collect, BlockStore, CachedFSBlockStore, ProllyTree, TreeCursor, DB, Repo, diff, DiffEvent, PullItemType, Remote};
 use rusqlite::Connection;
 use sqlite_commit_store::SqliteCommitGraphStore;
 use s3_store::S3BlockStore;
@@ -875,28 +875,31 @@ fn diff_cmd(
         return Ok(());
     }
 
-    // Create Differ instance
-    let mut differ = Differ::new(repo.block_store.as_ref());
-
     println!("\nDiff events (old -> new):");
     println!("--------------------------------------------------------------------------------");
 
     // Get prefix bytes if provided
     let prefix_bytes = prefix.as_ref().map(|p| p.as_bytes());
 
-    // Run diff
-    let events = differ.diff(&old_commit.tree_root, &new_commit.tree_root, prefix_bytes);
+    // Create streaming diff iterator
+    let mut iter = diff(
+        repo.block_store.as_ref(),
+        &old_commit.tree_root,
+        &new_commit.tree_root,
+        prefix_bytes,
+    );
 
     let mut event_count = 0;
     let mut added_count = 0;
     let mut deleted_count = 0;
     let mut modified_count = 0;
 
-    for event in &events {
+    // Stream events and print as we go
+    for event in &mut iter {
         event_count += 1;
 
         if limit.is_none() || event_count <= limit.unwrap() {
-            match event {
+            match &event {
                 DiffEvent::Added(added) => {
                     let key_str = String::from_utf8_lossy(&added.key);
                     let value_str = String::from_utf8_lossy(&added.value);
@@ -941,7 +944,7 @@ fn diff_cmd(
     }
 
     // Print diff statistics
-    let diff_stats = differ.get_stats();
+    let diff_stats = iter.get_stats();
     println!("\nDiff Algorithm Statistics:");
     println!("  Subtrees skipped (identical hashes): {}", diff_stats.subtrees_skipped);
     println!("  Nodes compared:                      {}", diff_stats.nodes_compared);
