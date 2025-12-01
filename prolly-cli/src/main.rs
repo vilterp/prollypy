@@ -1370,7 +1370,7 @@ mod tests {
         tree.insert_batch(vec![(b"key1".to_vec(), b"value1".to_vec())], false);
         let tree_root = tree.get_root_hash();
 
-        repo.commit(&tree_root, "Initial commit", None, None, None);
+        repo.commit(&tree_root, "Initial commit", None, None, None).unwrap();
 
         // Create a new branch
         let head_commit = repo.resolve_ref("main").unwrap().unwrap();
@@ -1400,7 +1400,7 @@ mod tests {
         let mut tree1 = ProllyTree::new(0.01, 42, Some(repo.block_store.clone()));
         tree1.insert_batch(vec![(b"key1".to_vec(), b"value1".to_vec())], false);
         let tree_root1 = tree1.get_root_hash();
-        repo.commit(&tree_root1, "First commit", None, None, None);
+        repo.commit(&tree_root1, "First commit", None, None, None).unwrap();
 
         // Create a branch and switch to it
         let main_commit = repo.resolve_ref("main").unwrap().unwrap();
@@ -1421,7 +1421,7 @@ mod tests {
             false,
         );
         let tree_root2 = tree2.get_root_hash();
-        repo.commit(&tree_root2, "Second commit on develop", None, None, None);
+        repo.commit(&tree_root2, "Second commit on develop", None, None, None).unwrap();
 
         // Switch back to main
         repo.checkout("main").unwrap();
@@ -1449,7 +1449,7 @@ mod tests {
                 false,
             );
             let tree_root = tree.get_root_hash();
-            repo.commit(&tree_root, &format!("Commit {}", i), None, None, None);
+            repo.commit(&tree_root, &format!("Commit {}", i), None, None, None).unwrap();
         }
 
         // Get log from HEAD
@@ -1487,7 +1487,7 @@ mod tests {
             false,
         );
         let tree_root = tree.get_root_hash();
-        repo.commit(&tree_root, "Test commit", None, None, None);
+        repo.commit(&tree_root, "Test commit", None, None, None).unwrap();
 
         // Run GC - should find no garbage since all nodes are reachable
         let tree_roots = repo.get_reachable_tree_roots().unwrap();
@@ -1509,7 +1509,7 @@ mod tests {
         let mut tree1 = ProllyTree::new(0.01, 42, Some(repo.block_store.clone()));
         tree1.insert_batch(vec![(b"key1".to_vec(), b"value1".to_vec())], false);
         let tree_root1 = tree1.get_root_hash();
-        repo.commit(&tree_root1, "First commit", None, None, None);
+        repo.commit(&tree_root1, "First commit", None, None, None).unwrap();
 
         // Create an orphaned tree (not committed)
         let mut orphan_tree = ProllyTree::new(0.01, 42, Some(repo.block_store.clone()));
@@ -1541,7 +1541,7 @@ mod tests {
         let mut tree1 = ProllyTree::new(0.01, 42, Some(repo.block_store.clone()));
         tree1.insert_batch(vec![(b"key1".to_vec(), b"value1".to_vec())], false);
         let tree_root1 = tree1.get_root_hash();
-        repo.commit(&tree_root1, "First commit", None, None, None);
+        repo.commit(&tree_root1, "First commit", None, None, None).unwrap();
 
         let mut orphan_tree = ProllyTree::new(0.01, 42, Some(repo.block_store.clone()));
         orphan_tree.insert_batch(vec![(b"orphan".to_vec(), b"data".to_vec())], false);
@@ -1606,7 +1606,7 @@ mod tests {
         let mut tree = ProllyTree::new(0.01, 42, Some(repo.block_store.clone()));
         tree.insert_batch(vec![(b"test".to_vec(), b"data".to_vec())], false);
         let tree_root = tree.get_root_hash();
-        repo.commit(&tree_root, "Test", None, None, None);
+        repo.commit(&tree_root, "Test", None, None, None).unwrap();
 
         // Use the CLI function to create a branch
         let result = branch_cmd(repo_path.clone(), Some("feature".to_string()), None, 100);
@@ -1629,7 +1629,7 @@ mod tests {
         let mut tree = ProllyTree::new(0.01, 42, Some(repo.block_store.clone()));
         tree.insert_batch(vec![(b"test".to_vec(), b"data".to_vec())], false);
         let tree_root = tree.get_root_hash();
-        repo.commit(&tree_root, "Test", None, None, None);
+        repo.commit(&tree_root, "Test", None, None, None).unwrap();
 
         let main_commit = repo.resolve_ref("main").unwrap().unwrap();
         repo.create_branch("develop", Some(&main_commit)).unwrap();
@@ -1655,7 +1655,7 @@ mod tests {
         let mut tree = ProllyTree::new(0.01, 42, Some(repo.block_store.clone()));
         tree.insert_batch(vec![(b"test".to_vec(), b"data".to_vec())], false);
         let tree_root = tree.get_root_hash();
-        repo.commit(&tree_root, "Test", None, None, None);
+        repo.commit(&tree_root, "Test", None, None, None).unwrap();
 
         let mut orphan = ProllyTree::new(0.01, 42, Some(repo.block_store.clone()));
         orphan.insert_batch(vec![(b"orphan".to_vec(), b"data".to_vec())], false);
