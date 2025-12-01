@@ -23,7 +23,7 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from prollypy.db import DB
-from prollypy.store import CachedFSBlockStore
+from prollypy.store import CachedFSBlockStore, MemoryBlockStore
 
 
 @dataclass
@@ -99,7 +99,8 @@ def benchmark_python(
     batch_size: int,
     cache_size: int,
     pattern: float = 0.01,
-    seed: int = 42
+    seed: int = 42,
+    use_memory: bool = False
 ) -> BenchmarkResult:
     """
     Benchmark the Python implementation.
@@ -111,14 +112,18 @@ def benchmark_python(
         cache_size: LRU cache size
         pattern: Tree split pattern
         seed: Random seed
+        use_memory: Use MemoryBlockStore instead of filesystem
 
     Returns:
         BenchmarkResult with timing and statistics
     """
     # Create storage
-    store_path = os.path.join(repo_path, "blocks")
-    os.makedirs(store_path, exist_ok=True)
-    store = CachedFSBlockStore(base_path=store_path, cache_size=cache_size)
+    if use_memory:
+        store = MemoryBlockStore()
+    else:
+        store_path = os.path.join(repo_path, "blocks")
+        os.makedirs(store_path, exist_ok=True)
+        store = CachedFSBlockStore(base_path=store_path, cache_size=cache_size)
 
     # Create DB
     db = DB(store=store, pattern=pattern, seed=seed)
@@ -201,7 +206,8 @@ def benchmark_rust(
     repo_path: str,
     batch_size: int,
     cache_size: int,
-    rust_binary: str
+    rust_binary: str,
+    use_memory: bool = False
 ) -> BenchmarkResult:
     """
     Benchmark the Rust implementation.
@@ -212,17 +218,19 @@ def benchmark_rust(
         batch_size: Batch size for inserts
         cache_size: LRU cache size
         rust_binary: Path to prolly CLI binary
+        use_memory: Use in-memory storage
 
     Returns:
         BenchmarkResult with timing and statistics
     """
-    # Initialize the repo first
-    init_cmd = [
-        rust_binary, "init",
-        "--repo", repo_path,
-        "--author", "benchmark"
-    ]
-    subprocess.run(init_cmd, capture_output=True, check=True)
+    # Initialize the repo first (only needed for non-memory mode)
+    if not use_memory:
+        init_cmd = [
+            rust_binary, "init",
+            "--repo", repo_path,
+            "--author", "benchmark"
+        ]
+        subprocess.run(init_cmd, capture_output=True, check=True)
 
     # Run import and capture output
     import_cmd = [
@@ -232,6 +240,8 @@ def benchmark_rust(
         "--batch-size", str(batch_size),
         "--cache-size", str(cache_size)
     ]
+    if use_memory:
+        import_cmd.append("--memory")
 
     start_time = time.time()
     result = subprocess.run(import_cmd, capture_output=True, text=True)
@@ -314,7 +324,8 @@ def run_benchmark(
     seed: int = 42,
     keep_data: bool = False,
     python_only: bool = False,
-    rust_only: bool = False
+    rust_only: bool = False,
+    use_memory: bool = False
 ) -> list[BenchmarkResult]:
     """
     Run the full benchmark.
@@ -329,6 +340,7 @@ def run_benchmark(
         keep_data: Keep temp directories after benchmark
         python_only: Only run Python benchmark
         rust_only: Only run Rust benchmark
+        use_memory: Use in-memory storage (Python only, Rust uses tmpfs)
 
     Returns:
         List of benchmark results
@@ -351,8 +363,12 @@ def run_benchmark(
             if not python_only:
                 raise RuntimeError("Could not build Rust CLI")
 
-    # Create temp directories
-    temp_base = tempfile.mkdtemp(prefix="prolly_bench_")
+    # Create temp directories - use /dev/shm for memory mode if available (Linux tmpfs)
+    if use_memory and os.path.exists("/dev/shm"):
+        temp_base = tempfile.mkdtemp(prefix="prolly_bench_", dir="/dev/shm")
+    else:
+        temp_base = tempfile.mkdtemp(prefix="prolly_bench_")
+
     sqlite_path = os.path.join(temp_base, "test.db")
     python_repo = os.path.join(temp_base, "python_repo")
     rust_repo = os.path.join(temp_base, "rust_repo")
@@ -374,12 +390,15 @@ def run_benchmark(
 
         # Run Python benchmark
         if not rust_only:
+            store_type = "MemoryBlockStore" if use_memory else "CachedFSBlockStore"
             print(f"\nRunning Python benchmark...")
+            print(f"  Store: {store_type}")
             print(f"  Batch size: {batch_size}")
-            print(f"  Cache size: {cache_size}")
+            if not use_memory:
+                print(f"  Cache size: {cache_size}")
 
             python_result = benchmark_python(
-                sqlite_path, python_repo, batch_size, cache_size
+                sqlite_path, python_repo, batch_size, cache_size, use_memory=use_memory
             )
             results.append(python_result)
             print(f"  Completed: {python_result.rows_per_sec:,.0f} rows/sec")
@@ -387,11 +406,17 @@ def run_benchmark(
         # Run Rust benchmark
         if not python_only:
             print(f"\nRunning Rust benchmark...")
+            if use_memory:
+                print(f"  Store: MemoryBlockStore")
+            else:
+                print(f"  Store: CachedFSBlockStore")
             print(f"  Batch size: {batch_size}")
-            print(f"  Cache size: {cache_size}")
+            if not use_memory:
+                print(f"  Cache size: {cache_size}")
 
             rust_result = benchmark_rust(
-                sqlite_path, rust_repo, batch_size, cache_size, str(rust_binary)
+                sqlite_path, rust_repo, batch_size, cache_size, str(rust_binary),
+                use_memory=use_memory
             )
             results.append(rust_result)
             print(f"  Completed: {rust_result.rows_per_sec:,.0f} rows/sec")
@@ -465,11 +490,18 @@ def main():
         action="store_true",
         help="Run benchmarks at multiple sizes for comparison"
     )
+    parser.add_argument(
+        "--memory",
+        action="store_true",
+        help="Use in-memory storage (no disk I/O)"
+    )
 
     args = parser.parse_args()
 
     print("=" * 80)
     print("  ProllyTree Python vs Rust Benchmark")
+    if args.memory:
+        print("  (In-Memory Mode - No Disk I/O)")
     print("=" * 80)
 
     if args.compare_sizes:
@@ -491,7 +523,8 @@ def main():
                 seed=args.seed,
                 keep_data=False,
                 python_only=args.python_only,
-                rust_only=args.rust_only
+                rust_only=args.rust_only,
+                use_memory=args.memory
             )
             all_results.extend(results)
             print_results_table(results, f"Results: {size:,} rows")
@@ -532,9 +565,13 @@ def main():
             seed=args.seed,
             keep_data=args.keep_data,
             python_only=args.python_only,
-            rust_only=args.rust_only
+            rust_only=args.rust_only,
+            use_memory=args.memory
         )
-        print_results_table(results, f"Benchmark Results: {args.num_rows:,} rows")
+        title = f"Benchmark Results: {args.num_rows:,} rows"
+        if args.memory:
+            title += " (In-Memory)"
+        print_results_table(results, title)
 
 
 if __name__ == "__main__":

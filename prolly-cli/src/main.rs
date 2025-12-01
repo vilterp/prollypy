@@ -48,6 +48,10 @@ enum Commands {
         #[arg(short, long, default_value = "10000")]
         cache_size: usize,
 
+        /// Use in-memory storage (for benchmarking)
+        #[arg(short, long)]
+        memory: bool,
+
         /// Verbose output
         #[arg(short, long)]
         verbose: bool,
@@ -328,14 +332,27 @@ fn import_sqlite(
     repo_path: PathBuf,
     batch_size: usize,
     cache_size: usize,
+    memory: bool,
     verbose: bool,
 ) -> anyhow::Result<()> {
-    let repo = open_repo(&repo_path, cache_size)?;
+    // Create the appropriate block store
+    let block_store: Arc<dyn BlockStore> = if memory {
+        Arc::new(prolly_core::MemoryBlockStore::new())
+    } else {
+        let repo = open_repo(&repo_path, cache_size)?;
+        repo.block_store.clone()
+    };
 
     println!("Importing SQLite database: {}", sqlite_path.display());
-    println!("Target repository: {}", repo_path.display());
+    if memory {
+        println!("Storage: In-memory (benchmark mode)");
+    } else {
+        println!("Target repository: {}", repo_path.display());
+    }
     println!("Batch size: {}", batch_size);
-    println!("Cache size: {}", cache_size);
+    if !memory {
+        println!("Cache size: {}", cache_size);
+    }
     println!();
 
     // Open SQLite database
@@ -353,7 +370,7 @@ fn import_sqlite(
     println!();
 
     // Create database
-    let mut db = DB::new(repo.block_store.clone(), 0.01, 42);
+    let mut db = DB::new(block_store.clone(), 0.01, 42);
 
     let total_start = Instant::now();
     let mut total_rows = 0;
@@ -492,22 +509,25 @@ fn import_sqlite(
     println!("Average: {:.0} rows/sec", total_rows_per_sec);
     println!();
     println!("Root hash: {}", hex::encode(db.get_root_hash()));
-    println!("Total nodes: {}", repo.block_store.count_nodes()?);
+    println!("Total nodes: {}", block_store.count_nodes()?);
     println!();
 
-    // Create a commit for the imported data
-    let root_hash = db.get_root_hash();
-    let commit_message = format!(
-        "Import from {}: {} rows from {} tables",
-        sqlite_path.display(),
-        total_rows,
-        table_names.len()
-    );
-    let commit = repo.commit(&root_hash, &commit_message, None, None, None)?;
-    let commit_hash = commit.compute_hash();
+    // Create a commit for the imported data (skip in memory mode)
+    if !memory {
+        let repo = open_repo(&repo_path, cache_size)?;
+        let root_hash = db.get_root_hash();
+        let commit_message = format!(
+            "Import from {}: {} rows from {} tables",
+            sqlite_path.display(),
+            total_rows,
+            table_names.len()
+        );
+        let commit = repo.commit(&root_hash, &commit_message, None, None, None)?;
+        let commit_hash = commit.compute_hash();
 
-    println!("Created commit: {}", hex::encode(&commit_hash[..8]));
-    println!("Message: {}", commit_message);
+        println!("Created commit: {}", hex::encode(&commit_hash[..8]));
+        println!("Message: {}", commit_message);
+    }
 
     Ok(())
 }
@@ -1227,8 +1247,9 @@ fn main() -> anyhow::Result<()> {
             repo,
             batch_size,
             cache_size,
+            memory,
             verbose,
-        } => import_sqlite(sqlite_path, repo, batch_size, cache_size, verbose)?,
+        } => import_sqlite(sqlite_path, repo, batch_size, cache_size, memory, verbose)?,
         Commands::Gc {
             repo,
             dry_run,
@@ -1350,7 +1371,7 @@ mod tests {
         init_repo(repo_path.clone(), "test@example.com".to_string()).unwrap();
 
         // Call the import function
-        let result = import_sqlite(sqlite_path, repo_path.clone(), 0, 100, false);
+        let result = import_sqlite(sqlite_path, repo_path.clone(), 0, 100, false, false);
         assert!(result.is_ok());
 
         // Verify the repo was created
