@@ -275,3 +275,75 @@ def test_incremental_insertion_order_independence(store):
     hash3 = tree3._hash_node(tree3.root)
 
     assert hash1 == hash2 == hash3, "Incremental insertion should be order-independent"
+
+
+def test_insertion_order_independence_with_splits(store):
+    """
+    Test insertion order independence when splits actually occur.
+
+    This test uses a higher split probability and more data to ensure
+    multiple leaf and internal node splits occur. The tree structure
+    should be identical regardless of batch sizes.
+    """
+    # Use 50% split probability so splits happen frequently
+    pattern = 0.5
+    num_items = 100
+
+    # Create all items
+    all_data = [(f'{i:05d}'.encode(), f'value_{i}'.encode()) for i in range(num_items)]
+
+    # Test 1: Insert all at once
+    tree1 = ProllyTree(pattern=pattern, seed=42, store=store)
+    tree1.insert_batch(all_data, verbose=False)
+    hash1 = tree1._hash_node(tree1.root)
+
+    # Test 2: Insert in 2 batches
+    tree2 = ProllyTree(pattern=pattern, seed=42, store=store)
+    half = num_items // 2
+    tree2.insert_batch([(f'{i:05d}'.encode(), f'value_{i}'.encode()) for i in range(half)], verbose=False)
+    tree2.insert_batch([(f'{i:05d}'.encode(), f'value_{i}'.encode()) for i in range(half, num_items)], verbose=False)
+    hash2 = tree2._hash_node(tree2.root)
+
+    # Test 3: Insert in 10 batches
+    tree3 = ProllyTree(pattern=pattern, seed=42, store=store)
+    batch_size = num_items // 10
+    for batch_num in range(10):
+        start = batch_num * batch_size
+        end = start + batch_size
+        tree3.insert_batch([(f'{i:05d}'.encode(), f'value_{i}'.encode()) for i in range(start, end)], verbose=False)
+    hash3 = tree3._hash_node(tree3.root)
+
+    # Test 4: Insert one-by-one
+    tree4 = ProllyTree(pattern=pattern, seed=42, store=store)
+    for i in range(num_items):
+        tree4.insert_batch([(f'{i:05d}'.encode(), f'value_{i}'.encode())], verbose=False)
+    hash4 = tree4._hash_node(tree4.root)
+
+    assert hash1 == hash2, f"Single batch vs 2 batches should produce same tree. Got {hash1.hex()} vs {hash2.hex()}"
+    assert hash1 == hash3, f"Single batch vs 10 batches should produce same tree. Got {hash1.hex()} vs {hash3.hex()}"
+    assert hash1 == hash4, f"Single batch vs one-by-one should produce same tree. Got {hash1.hex()} vs {hash4.hex()}"
+
+
+def test_insertion_order_independence_minimal(store):
+    """
+    Minimal test case for insertion order independence with splits.
+
+    Even with just 10 items and 50% split probability, the tree structure
+    should be identical when inserting all at once vs in batches.
+    """
+    pattern = 0.5
+
+    all_data = [(f'{i:05d}'.encode(), f'value_{i}'.encode()) for i in range(10)]
+
+    # All at once
+    tree1 = ProllyTree(pattern=pattern, seed=42, store=store)
+    tree1.insert_batch(all_data, verbose=False)
+    hash1 = tree1._hash_node(tree1.root)
+
+    # Two batches of 5
+    tree2 = ProllyTree(pattern=pattern, seed=42, store=store)
+    tree2.insert_batch([(f'{i:05d}'.encode(), f'value_{i}'.encode()) for i in range(5)], verbose=False)
+    tree2.insert_batch([(f'{i:05d}'.encode(), f'value_{i}'.encode()) for i in range(5, 10)], verbose=False)
+    hash2 = tree2._hash_node(tree2.root)
+
+    assert hash1 == hash2, f"Trees should be identical. Single batch: {hash1.hex()}, Two batches: {hash2.hex()}"
