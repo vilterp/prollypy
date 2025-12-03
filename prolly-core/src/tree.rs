@@ -16,7 +16,10 @@ use crate::node::Node;
 use crate::store::{BlockStore, MemoryBlockStore};
 use crate::Hash;
 
-const MIN_NODE_SIZE: usize = 2;
+// Chunking constants
+const MIN_CHUNK_SIZE: usize = 2;      // Minimum items per node (never split below this)
+const MAX_CHUNK_SIZE: usize = 1024;   // Maximum items per node (always split at this)
+const TARGET_CHUNK_SIZE: usize = 64;  // Target items per node (threshold doubles every target_size items)
 
 /// Statistics for a single batch operation
 #[derive(Debug, Clone, Default)]
@@ -110,6 +113,36 @@ impl ProllyTree {
         // Combine current hash with data by using current_hash as seed
         let hash64 = xxh3_64_with_seed(data, current_hash as u64);
         hash64 as u32 // Take lower 32 bits
+    }
+
+    /// Determine if we should split after this item using size-aware threshold.
+    ///
+    /// The threshold grows with chunk size: starts at self.pattern, doubles every
+    /// TARGET_CHUNK_SIZE items. This ensures:
+    /// - Small chunks: low split probability (controlled by pattern)
+    /// - Large chunks: increasing split probability
+    /// - MAX_CHUNK_SIZE: forced split
+    ///
+    /// Maintains insertion-order independence since decision only depends on:
+    /// - The key's hash (deterministic)
+    /// - Current chunk size (same for same key sequence)
+    fn should_split(&self, key: &[u8], current_size: usize) -> bool {
+        if current_size < MIN_CHUNK_SIZE {
+            return false;
+        }
+        if current_size >= MAX_CHUNK_SIZE {
+            return true;
+        }
+
+        let key_hash = self.rolling_hash(self.seed, key);
+
+        // Threshold grows exponentially with size
+        // At size=TARGET_CHUNK_SIZE, threshold = pattern * 2
+        // At size=2*TARGET_CHUNK_SIZE, threshold = pattern * 4
+        let size_factor = 2.0_f64.powf(current_size as f64 / TARGET_CHUNK_SIZE as f64);
+        let adjusted_threshold = ((self.pattern as f64) * size_factor).min(i32::MAX as f64) as u32;
+
+        key_hash < adjusted_threshold
     }
 
     /// Compute content hash for a node.
@@ -344,7 +377,7 @@ impl ProllyTree {
             return children[0].clone();
         }
 
-        // Build internal nodes using per-child boundary detection
+        // Build internal nodes using size-aware boundary detection
         let mut internal_nodes = Vec::new();
         let mut current_children: Vec<&Node> = Vec::new();
 
@@ -354,18 +387,15 @@ impl ProllyTree {
             // Get boundary key for this child (first key in subtree)
             let boundary_key = self.get_first_key(child);
 
-            // Compute per-child hash (independent of previous children)
-            let child_hash_val = if let Some(ref key) = boundary_key {
-                self.rolling_hash(self.seed, key.as_ref())
+            // Use size-aware splitting, or force split on last child
+            let is_last = i == children.len() - 1;
+            let split = if let Some(ref key) = boundary_key {
+                self.should_split(key.as_ref(), current_children.len()) || is_last
             } else {
-                self.pattern + 1 // Won't trigger split
+                is_last // No key, only split if last
             };
 
-            // Split if: (1) have minimum children AND hash below pattern OR (2) last child
-            let has_min = current_children.len() >= MIN_NODE_SIZE;
-            let should_split = (has_min && child_hash_val < self.pattern) || (i == children.len() - 1);
-
-            if should_split && !current_children.is_empty() {
+            if split && !current_children.is_empty() {
                 // Create internal node from current children
                 let mut internal_node = Node::new_internal();
 
@@ -424,14 +454,11 @@ impl ProllyTree {
             current_keys.push(key.clone());
             current_values.push(value.clone());
 
-            // Compute per-item hash (independent of previous items)
-            let item_hash = self.rolling_hash(self.seed, key.as_ref());
+            // Use size-aware splitting, or force split on last item
+            let is_last = i == items.len() - 1;
+            let split = self.should_split(key.as_ref(), current_keys.len()) || is_last;
 
-            // Split if: (1) have minimum entries AND hash below pattern OR (2) last item
-            let has_min = current_keys.len() >= MIN_NODE_SIZE;
-            let should_split = (has_min && item_hash < self.pattern) || (i == items.len() - 1);
-
-            if should_split && !current_keys.is_empty() {
+            if split && !current_keys.is_empty() {
                 let mut leaf = Node::new_leaf();
                 leaf.keys = current_keys;
                 leaf.values = current_values;

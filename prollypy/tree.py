@@ -14,6 +14,11 @@ from .node import Node
 from .store import BlockStore, MemoryBlockStore, CachedFSBlockStore
 from .cursor import TreeCursor
 
+# Chunking constants
+MIN_CHUNK_SIZE = 2      # Minimum items per node (never split below this)
+MAX_CHUNK_SIZE = 1024   # Maximum items per node (always split at this)
+TARGET_CHUNK_SIZE = 64  # Target items per node (threshold doubles every target_size items)
+
 
 class ProllyTree:
     def __init__(self, pattern=0.01, seed=42, store: Optional[BlockStore] = None, validate=False):
@@ -59,6 +64,35 @@ class ProllyTree:
         hash_bytes = hashlib.sha256(combined).digest()
         # Take first 4 bytes and convert to uint32
         return int.from_bytes(hash_bytes[:4], byteorder='big')
+
+    def _should_split(self, key: bytes, current_size: int) -> bool:
+        """
+        Determine if we should split after this item using size-aware threshold.
+
+        The threshold grows with chunk size: starts at self.pattern, doubles every
+        TARGET_CHUNK_SIZE items. This ensures:
+        - Small chunks: low split probability (controlled by pattern)
+        - Large chunks: increasing split probability
+        - MAX_CHUNK_SIZE: forced split
+
+        Maintains insertion-order independence since decision only depends on:
+        - The key's hash (deterministic)
+        - Current chunk size (same for same key sequence)
+        """
+        if current_size < MIN_CHUNK_SIZE:
+            return False
+        if current_size >= MAX_CHUNK_SIZE:
+            return True
+
+        key_hash = self._rolling_hash(self.seed, key)
+
+        # Threshold grows exponentially with size
+        # At size=TARGET_CHUNK_SIZE, threshold = pattern * 2
+        # At size=2*TARGET_CHUNK_SIZE, threshold = pattern * 4
+        size_factor = 2 ** (current_size / TARGET_CHUNK_SIZE)
+        adjusted_threshold = int(min(self.pattern * size_factor, 2**31))  # Cap at 50%
+
+        return key_hash < adjusted_threshold
 
     def _hash_node(self, node: Node) -> bytes:
         """
@@ -258,9 +292,9 @@ class ProllyTree:
         Build an internal tree from a list of children using per-child boundary detection.
 
         Each child independently decides if it's a boundary based on its first key's hash.
-        A child is a boundary (last child in a node) if hash(seed, first_key) < pattern.
-        This ensures insertion-order independence since split decisions don't
-        depend on previous children.
+        A child is a boundary (last child in a node) if _should_split returns True for
+        the child's first key. This ensures insertion-order independence since split
+        decisions only depend on the key and current chunk size.
 
         Args:
             children: List of Node objects
@@ -275,9 +309,7 @@ class ProllyTree:
             # Single child - just return it (no need for parent)
             return children[0]
 
-        MIN_NODE_SIZE = 2  # Minimum children per internal node
-
-        # Build internal nodes using per-child boundary detection
+        # Build internal nodes using size-aware boundary detection
         internal_nodes = []
         current_children = []
 
@@ -287,15 +319,12 @@ class ProllyTree:
             # Get boundary key for this child (first key in subtree)
             boundary_key = self._get_first_key(child)
 
-            # Compute per-child hash (independent of previous children)
+            # Use size-aware splitting, or force split on last child
+            is_last = (i == len(children) - 1)
             if boundary_key is not None:
-                child_hash_val = self._rolling_hash(self.seed, boundary_key)
+                should_split = self._should_split(boundary_key, len(current_children)) or is_last
             else:
-                child_hash_val = self.pattern + 1  # Won't trigger split
-
-            # Split if: (1) have minimum children AND hash below pattern OR (2) last child
-            has_min = len(current_children) >= MIN_NODE_SIZE
-            should_split = (has_min and child_hash_val < self.pattern) or (i == len(children) - 1)
+                should_split = is_last  # No key, only split if last
 
             if should_split and current_children:
                 # Create internal node from current children
@@ -365,19 +394,15 @@ class ProllyTree:
 
     def _build_leaves(self, items: list[tuple[bytes, bytes]]) -> list[Node]:
         """
-        Build leaf nodes from sorted items using per-item boundary detection.
+        Build leaf nodes from sorted items using size-aware boundary detection.
 
-        Each item independently decides if it's a boundary based on its own hash.
-        An item is a boundary (last item in a node) if hash(seed, key) < pattern.
-        This ensures insertion-order independence since split decisions don't
-        depend on previous items.
-
-        Uses a minimum node size of 2 to avoid degenerate single-item nodes.
+        Each item independently decides if it's a boundary based on its own hash
+        and the current chunk size. Split probability increases as chunks grow.
+        This ensures insertion-order independence since split decisions only
+        depend on the key and current chunk size.
         """
         if not items:
             return []
-
-        MIN_NODE_SIZE = 2  # Minimum entries per node to avoid degenerate trees
 
         leaves = []
         current_keys = []
@@ -387,12 +412,9 @@ class ProllyTree:
             current_keys.append(key)
             current_values.append(value)
 
-            # Compute per-item hash (independent of previous items)
-            item_hash = self._rolling_hash(self.seed, key)
-
-            # Split if: (1) have minimum entries AND hash below pattern OR (2) last item
-            has_min = len(current_keys) >= MIN_NODE_SIZE
-            should_split = (has_min and item_hash < self.pattern) or (i == len(items) - 1)
+            # Use size-aware splitting, or force split on last item
+            is_last = (i == len(items) - 1)
+            should_split = self._should_split(key, len(current_keys)) or is_last
 
             if should_split and current_keys:
                 leaf = Node(is_leaf=True)
