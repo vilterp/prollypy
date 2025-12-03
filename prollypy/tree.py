@@ -84,7 +84,9 @@ class ProllyTree:
         if current_size >= MAX_CHUNK_SIZE:
             return True
 
-        key_hash = self._rolling_hash(self.seed, key)
+        # Convert string to bytes if needed
+        key_bytes = key.encode('utf-8') if isinstance(key, str) else key
+        key_hash = self._rolling_hash(self.seed, key_bytes)
 
         # Threshold grows exponentially with size
         # At size=TARGET_CHUNK_SIZE, threshold = pattern * 2
