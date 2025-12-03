@@ -17,7 +17,7 @@ from .cursor import TreeCursor
 # Chunking constants
 MIN_CHUNK_SIZE = 2      # Minimum items per node (never split below this)
 MAX_CHUNK_SIZE = 1024   # Maximum items per node (always split at this)
-TARGET_CHUNK_SIZE = 64  # Target items per node (threshold doubles every target_size items)
+TARGET_CHUNK_SIZE = 256 # Threshold doubles every this many items (higher = less aggressive ramping)
 
 
 class ProllyTree:

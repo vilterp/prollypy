@@ -19,7 +19,7 @@ use crate::Hash;
 // Chunking constants
 const MIN_CHUNK_SIZE: usize = 2;      // Minimum items per node (never split below this)
 const MAX_CHUNK_SIZE: usize = 1024;   // Maximum items per node (always split at this)
-const TARGET_CHUNK_SIZE: usize = 64;  // Target items per node (threshold doubles every target_size items)
+const TARGET_CHUNK_SIZE: usize = 256; // Threshold doubles every this many items (higher = less aggressive ramping)
 
 /// Statistics for a single batch operation
 #[derive(Debug, Clone, Default)]
