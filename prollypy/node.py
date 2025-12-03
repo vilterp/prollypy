@@ -124,7 +124,7 @@ class Node:
                         if store:
                             error_msg.append(f"\n  Children first keys:")
                             for j, child_hash in enumerate(self.values):
-                                assert isinstance(child_hash, str), "Internal node values must be strings"
+                                assert isinstance(child_hash, bytes), "Internal node values must be bytes (hashes)"
                                 child = store.get_node(child_hash)
                                 if child and len(child.keys) > 0:
                                     first_key = child.keys[0] if child.is_leaf else child.keys[0] if child.keys else "<no keys>"
@@ -190,7 +190,7 @@ class Node:
                 # Get child from store
                 if store is None:
                     raise ValueError("Cannot validate internal node without store")
-                assert isinstance(child_hash, str), "Internal node values must be strings"
+                assert isinstance(child_hash, bytes), "Internal node values must be bytes (hashes)"
                 child = store.get_node(child_hash)
                 if child is None:
                     raise ValueError(f"Child node {child_hash} not found in store")

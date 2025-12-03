@@ -14,6 +14,11 @@ from .node import Node
 from .store import BlockStore, MemoryBlockStore, CachedFSBlockStore
 from .cursor import TreeCursor
 
+# Chunking constants
+MIN_CHUNK_SIZE = 2      # Minimum items per node (never split below this)
+MAX_CHUNK_SIZE = 1024   # Maximum items per node (always split at this)
+TARGET_CHUNK_SIZE = 64  # Target items per node (threshold doubles every target_size items)
+
 
 class ProllyTree:
     def __init__(self, pattern=0.01, seed=42, store: Optional[BlockStore] = None, validate=False):
@@ -59,6 +64,35 @@ class ProllyTree:
         hash_bytes = hashlib.sha256(combined).digest()
         # Take first 4 bytes and convert to uint32
         return int.from_bytes(hash_bytes[:4], byteorder='big')
+
+    def _should_split(self, key: bytes, current_size: int) -> bool:
+        """
+        Determine if we should split after this item using size-aware threshold.
+
+        The threshold grows with chunk size: starts at self.pattern, doubles every
+        TARGET_CHUNK_SIZE items. This ensures:
+        - Small chunks: low split probability (controlled by pattern)
+        - Large chunks: increasing split probability
+        - MAX_CHUNK_SIZE: forced split
+
+        Maintains insertion-order independence since decision only depends on:
+        - The key's hash (deterministic)
+        - Current chunk size (same for same key sequence)
+        """
+        if current_size < MIN_CHUNK_SIZE:
+            return False
+        if current_size >= MAX_CHUNK_SIZE:
+            return True
+
+        key_hash = self._rolling_hash(self.seed, key)
+
+        # Threshold grows exponentially with size
+        # At size=TARGET_CHUNK_SIZE, threshold = pattern * 2
+        # At size=2*TARGET_CHUNK_SIZE, threshold = pattern * 4
+        size_factor = 2 ** (current_size / TARGET_CHUNK_SIZE)
+        adjusted_threshold = int(min(self.pattern * size_factor, 2**31))  # Cap at 50%
+
+        return key_hash < adjusted_threshold
 
     def _hash_node(self, node: Node) -> bytes:
         """
@@ -129,7 +163,15 @@ class ProllyTree:
             }
 
         # Rebuild tree with mutations (always quiet during rebuild)
-        new_root = self._rebuild_with_mutations(self.root, mutations, verbose=False)
+        result_nodes = self._rebuild_with_mutations(self.root, mutations, verbose=False)
+
+        # If we got multiple nodes back, build an internal node structure
+        if len(result_nodes) == 0:
+            new_root = Node(is_leaf=True)
+        elif len(result_nodes) == 1:
+            new_root = result_nodes[0]
+        else:
+            new_root = self._build_internal_from_children(result_nodes, verbose=False)
 
         # Store the new root (unless it was reused)
         if new_root is not self.root:
@@ -182,92 +224,43 @@ class ProllyTree:
 
         return stats
 
-    def _rebuild_with_mutations(self, node: Node, mutations: list[tuple[bytes, bytes]], verbose: bool = True) -> Node:
+    def _collect_all_items(self, node: Node) -> list[tuple[bytes, bytes]]:
+        """
+        Collect all key-value pairs from a node's subtree.
+        Used when we need to rebuild from scratch.
+        """
+        if node.is_leaf:
+            return list(zip(node.keys, node.values))
+        else:
+            items = []
+            for child_hash in node.values:
+                child = self._get_node(child_hash)
+                if child is not None:
+                    items.extend(self._collect_all_items(child))
+            return items
+
+    def _rebuild_with_mutations(self, node: Node, mutations: list[tuple[bytes, bytes]], verbose: bool = True) -> list[Node]:
         """
         Core incremental rebuild logic.
-        Returns: new node (possibly with different structure)
+
+        For insertion-order independence, when mutations affect a subtree,
+        we collect all items from that subtree and rebuild from scratch.
+        This ensures the same structure regardless of insertion order.
+
+        Returns: list of nodes (possibly multiple if the node split)
         """
         if not mutations:
             # No mutations for this subtree - REUSE it!
-            return node
+            return [node]
 
-        if node.is_leaf:
-            # Leaf node: merge old data with mutations
-            merged = self._merge_sorted(
-                list(zip(node.keys, node.values)),
-                mutations
-            )
+        # Collect all existing items from this subtree
+        existing_items = self._collect_all_items(node)
 
-            # Build new leaf nodes (may split if too large)
-            new_leaves = self._build_leaves(merged)
+        # Merge with mutations
+        merged = self._merge_sorted(existing_items, mutations)
 
-            if len(new_leaves) == 1:
-                return new_leaves[0]
-            else:
-                # Multiple leaves - need parent (may recursively split if too many)
-                return self._build_internal_from_children(new_leaves, verbose)
-
-        else:
-            # Internal node: partition mutations to children and rebuild recursively
-
-            # Recursively rebuild children that have mutations
-            new_children = []
-            mut_idx = 0
-
-            for i, child_hash in enumerate(node.values):
-                # Find mutations for this child
-                # For child i, mutations go to it if:
-                # - i == 0: key < separator[0]
-                # - 0 < i < len(node.keys): separator[i-1] <= key < separator[i]
-                # - i == len(node.keys): key >= separator[-1]
-                child_mutations = []
-
-                while mut_idx < len(mutations):
-                    key = mutations[mut_idx][0]
-
-                    # Determine if this mutation belongs to this child
-                    if i == 0:
-                        # First child: all keys < first separator
-                        if len(node.keys) == 0 or key < node.keys[0]:
-                            child_mutations.append(mutations[mut_idx])
-                            mut_idx += 1
-                        else:
-                            break
-                    elif i < len(node.keys):
-                        # Middle child: separator[i-1] <= key < separator[i]
-                        if key < node.keys[i]:
-                            child_mutations.append(mutations[mut_idx])
-                            mut_idx += 1
-                        else:
-                            break
-                    else:
-                        # Last child: all remaining keys
-                        child_mutations.append(mutations[mut_idx])
-                        mut_idx += 1
-
-                # Rebuild child (or reuse if no mutations)
-                child_node = self._get_node(child_hash)
-                if child_node is None:
-                    raise ValueError(f"Child node {child_hash} not found in store")
-                new_child = self._rebuild_with_mutations(child_node, child_mutations, verbose)
-
-                # The rebuild might return multiple nodes (if split), or a single node
-                if isinstance(new_child, list):
-                    new_children.extend(new_child)
-                else:
-                    new_children.append(new_child)
-
-
-            # Now rebuild internal structure from new children
-            if len(new_children) == 1:
-                # Single child - unwrap it
-                return new_children[0]
-            else:
-                # Build new internal node(s) from children
-                new_node = self._build_internal_from_children(new_children, verbose)
-                if self.validate:
-                    new_node.validate(self.store, context="_rebuild_with_mutations (internal node rebuild)")
-                return new_node
+        # Rebuild leaves from the merged items
+        return self._build_leaves(merged)
 
     def _get_first_key(self, node: Node) -> Optional[bytes]:
         """
@@ -296,20 +289,18 @@ class ProllyTree:
 
     def _build_internal_from_children(self, children: list[Node], verbose: bool = False) -> Node:
         """
-        Build a balanced internal tree from a list of children.
+        Build an internal tree from a list of children using per-child boundary detection.
 
-        Uses a BALANCED DISTRIBUTION approach: instead of chunking children left-to-right,
-        we evenly distribute them across internal nodes to create a properly balanced tree.
-
-        Key insight: If we have 200 children and want fanout of 32:
-        - WRONG: [32][32][32][32][32][32][8] - creates right-skew
-        - RIGHT: Build 7 internal nodes with ~29 children each - all siblings equal
+        Each child independently decides if it's a boundary based on its first key's hash.
+        A child is a boundary (last child in a node) if _should_split returns True for
+        the child's first key. This ensures insertion-order independence since split
+        decisions only depend on the key and current chunk size.
 
         Args:
             children: List of Node objects
 
         Returns:
-            Node (single child, or newly created internal node)
+            Node (single child, or newly created internal node/tree)
         """
         if len(children) == 0:
             raise ValueError("Cannot build internal node with no children")
@@ -318,89 +309,61 @@ class ProllyTree:
             # Single child - just return it (no need for parent)
             return children[0]
 
-        # Target fanout for internal nodes
-        # Smaller = deeper tree, but more balanced
-        # Larger = shallower tree, but potentially wider root
-        TARGET_FANOUT = 32
-        MIN_FANOUT = 8  # Don't create tiny nodes
-
-        # Calculate how many internal nodes we need at this level
-        # We want to distribute children EVENLY across internal nodes
-        num_internal_nodes = max(2, (len(children) + TARGET_FANOUT - 1) // TARGET_FANOUT)
-
-        # Calculate children per internal node (distribute evenly)
-        children_per_node = len(children) // num_internal_nodes
-        extra_children = len(children) % num_internal_nodes
-
-        # Build internal nodes with balanced distribution
+        # Build internal nodes using size-aware boundary detection
         internal_nodes = []
-        child_idx = 0
+        current_children = []
 
-        for node_num in range(num_internal_nodes):
-            # Some nodes get one extra child to distribute the remainder
-            node_size = children_per_node + (1 if node_num < extra_children else 0)
+        for i, child in enumerate(children):
+            current_children.append(child)
 
-            # Don't create nodes that are too small (unless it's the only option)
-            if node_size < MIN_FANOUT and len(internal_nodes) > 0 and node_num == num_internal_nodes - 1:
-                # Last node is too small - merge with previous node
-                prev_node = internal_nodes[-1]
-                node_children = children[child_idx:child_idx + node_size]
+            # Get boundary key for this child (first key in subtree)
+            boundary_key = self._get_first_key(child)
 
-                for child in node_children:
+            # Use size-aware splitting, or force split on last child
+            is_last = (i == len(children) - 1)
+            if boundary_key is not None:
+                should_split = self._should_split(boundary_key, len(current_children)) or is_last
+            else:
+                should_split = is_last  # No key, only split if last
+
+            if should_split and current_children:
+                # Create internal node from current children
+                internal_node = Node(is_leaf=False)
+
+                for j, c in enumerate(current_children):
                     # Store or reuse child hash
-                    if hasattr(child, '_reused_hash'):
-                        child_hash = getattr(child, '_reused_hash')
-                        delattr(child, '_reused_hash')
+                    if hasattr(c, '_reused_hash'):
+                        node_hash = getattr(c, '_reused_hash')
+                        delattr(c, '_reused_hash')
                     else:
-                        child_hash = self._store_node(child)
+                        node_hash = self._store_node(c)
 
-                    prev_node.values.append(child_hash)
+                    internal_node.values.append(node_hash)
 
-                    # Add separator key
-                    separator = self._get_first_key(child)
-                    if separator is not None and len(prev_node.keys) < len(prev_node.values) - 1:
-                        prev_node.keys.append(separator)
+                    # Add separator key (first key of next child)
+                    if j < len(current_children) - 1:
+                        next_child = current_children[j + 1]
+                        separator = self._get_first_key(next_child)
+                        if separator is not None:
+                            internal_node.keys.append(separator)
 
-                child_idx += node_size
-                continue
+                # Validate before adding
+                if self.validate:
+                    internal_node.validate(self.store, context=f"_build_internal_from_children")
 
-            # Create new internal node
-            internal_node = Node(is_leaf=False)
-            node_children = children[child_idx:child_idx + node_size]
+                internal_nodes.append(internal_node)
 
-            for i, child in enumerate(node_children):
-                # Store or reuse child hash
-                if hasattr(child, '_reused_hash'):
-                    child_hash = getattr(child, '_reused_hash')
-                    delattr(child, '_reused_hash')
-                else:
-                    child_hash = self._store_node(child)
+                # Reset for next internal node
+                current_children = []
 
-                internal_node.values.append(child_hash)
-
-                # Add separator key (first key of next child)
-                if i < len(node_children) - 1:
-                    next_child = node_children[i + 1]
-                    separator = self._get_first_key(next_child)
-                    if separator is not None:
-                        internal_node.keys.append(separator)
-
-            # Validate before adding
-            if self.validate:
-                internal_node.validate(self.store, context=f"_build_internal_from_children (node {node_num})")
-
-            internal_nodes.append(internal_node)
-            child_idx += node_size
-
-        # If we only created one internal node, return it directly
+        # If we only created one internal node with a single child, unwrap it
         if len(internal_nodes) == 1:
             node = internal_nodes[0]
             if len(node.values) == 1:
-                # Unwrap single-child internal node
-                child_hash = node.values[0]
-                child = self._get_node(child_hash)
+                node_hash = node.values[0]
+                child = self._get_node(node_hash)
                 if child is None:
-                    raise ValueError(f"Child node {child_hash} not found in store")
+                    raise ValueError(f"Child node {node_hash} not found in store")
                 return child
             return node
 
@@ -431,32 +394,27 @@ class ProllyTree:
 
     def _build_leaves(self, items: list[tuple[bytes, bytes]]) -> list[Node]:
         """
-        Build leaf nodes from sorted items using rolling hash for splits.
+        Build leaf nodes from sorted items using size-aware boundary detection.
 
-        Split points are determined by rolling hash being below pattern threshold,
-        with a minimum of 2 entries per node to avoid degenerate splits.
+        Each item independently decides if it's a boundary based on its own hash
+        and the current chunk size. Split probability increases as chunks grow.
+        This ensures insertion-order independence since split decisions only
+        depend on the key and current chunk size.
         """
         if not items:
             return []
 
-        MIN_NODE_SIZE = 2  # Minimum entries per node to avoid degenerate trees
-
         leaves = []
         current_keys = []
         current_values = []
-        roll_hash = self.seed  # Start with seed
 
         for i, (key, value) in enumerate(items):
             current_keys.append(key)
             current_values.append(value)
 
-            # Update rolling hash with the key and value bytes
-            roll_hash = self._rolling_hash(roll_hash, key)
-            roll_hash = self._rolling_hash(roll_hash, value)
-
-            # Split if: (1) have minimum entries AND hash below pattern OR (2) last item
-            has_min = len(current_keys) >= MIN_NODE_SIZE
-            should_split = (has_min and roll_hash < self.pattern) or (i == len(items) - 1)
+            # Use size-aware splitting, or force split on last item
+            is_last = (i == len(items) - 1)
+            should_split = self._should_split(key, len(current_keys)) or is_last
 
             if should_split and current_keys:
                 leaf = Node(is_leaf=True)
@@ -472,7 +430,6 @@ class ProllyTree:
                 # Reset for next leaf
                 current_keys = []
                 current_values = []
-                roll_hash = self.seed  # Reset hash for next node
 
         return leaves if leaves else [Node(is_leaf=True)]
 

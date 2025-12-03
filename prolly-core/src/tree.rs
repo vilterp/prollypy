@@ -16,9 +16,10 @@ use crate::node::Node;
 use crate::store::{BlockStore, MemoryBlockStore};
 use crate::Hash;
 
-const MIN_NODE_SIZE: usize = 2;
-const TARGET_FANOUT: usize = 32;
-const MIN_FANOUT: usize = 8;
+// Chunking constants
+const MIN_CHUNK_SIZE: usize = 2;      // Minimum items per node (never split below this)
+const MAX_CHUNK_SIZE: usize = 1024;   // Maximum items per node (always split at this)
+const TARGET_CHUNK_SIZE: usize = 64;  // Target items per node (threshold doubles every target_size items)
 
 /// Statistics for a single batch operation
 #[derive(Debug, Clone, Default)]
@@ -114,6 +115,36 @@ impl ProllyTree {
         hash64 as u32 // Take lower 32 bits
     }
 
+    /// Determine if we should split after this item using size-aware threshold.
+    ///
+    /// The threshold grows with chunk size: starts at self.pattern, doubles every
+    /// TARGET_CHUNK_SIZE items. This ensures:
+    /// - Small chunks: low split probability (controlled by pattern)
+    /// - Large chunks: increasing split probability
+    /// - MAX_CHUNK_SIZE: forced split
+    ///
+    /// Maintains insertion-order independence since decision only depends on:
+    /// - The key's hash (deterministic)
+    /// - Current chunk size (same for same key sequence)
+    fn should_split(&self, key: &[u8], current_size: usize) -> bool {
+        if current_size < MIN_CHUNK_SIZE {
+            return false;
+        }
+        if current_size >= MAX_CHUNK_SIZE {
+            return true;
+        }
+
+        let key_hash = self.rolling_hash(self.seed, key);
+
+        // Threshold grows exponentially with size
+        // At size=TARGET_CHUNK_SIZE, threshold = pattern * 2
+        // At size=2*TARGET_CHUNK_SIZE, threshold = pattern * 4
+        let size_factor = 2.0_f64.powf(current_size as f64 / TARGET_CHUNK_SIZE as f64);
+        let adjusted_threshold = ((self.pattern as f64) * size_factor).min(i32::MAX as f64) as u32;
+
+        key_hash < adjusted_threshold
+    }
+
     /// Compute content hash for a node.
     ///
     /// For leaf nodes: hash the key-value pairs
@@ -189,7 +220,16 @@ impl ProllyTree {
         self.reset_stats();
 
         // Rebuild tree with mutations
-        let new_root = self.rebuild_with_mutations(self.root.clone(), &mutations);
+        let result_nodes = self.rebuild_with_mutations(self.root.clone(), &mutations);
+
+        // If we got multiple nodes back, build an internal node structure
+        let new_root = if result_nodes.is_empty() {
+            Node::new_leaf()
+        } else if result_nodes.len() == 1 {
+            result_nodes.into_iter().next().unwrap()
+        } else {
+            self.build_internal_from_children(result_nodes)
+        };
 
         // Store the new root
         if !std::ptr::eq(&new_root as *const Node, &self.root as *const Node) {
@@ -218,84 +258,93 @@ impl ProllyTree {
         self.stats.clone()
     }
 
+    /// Collect all key-value pairs from a node's subtree.
+    /// Used when we need to rebuild from scratch.
+    fn collect_all_items(&self, node: &Node) -> Vec<(Arc<[u8]>, Arc<[u8]>)> {
+        if node.is_leaf {
+            node.keys
+                .iter()
+                .zip(node.values.iter())
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
+        } else {
+            let mut items = Vec::new();
+            for child_hash in node.values.iter() {
+                let child_hash_vec = child_hash.to_vec();
+                if let Ok(Some(child)) = self.store.get_node(&child_hash_vec) {
+                    items.extend(self.collect_all_items(&child));
+                }
+            }
+            items
+        }
+    }
+
     /// Core incremental rebuild logic.
+    ///
+    /// For insertion-order independence, when mutations affect a subtree,
+    /// we collect all items from that subtree and rebuild from scratch.
+    /// This ensures the same structure regardless of insertion order.
     ///
     /// # Returns
     ///
-    /// New node (possibly with different structure)
-    fn rebuild_with_mutations(&mut self, node: Node, mutations: &[(Vec<u8>, Vec<u8>)]) -> Node {
+    /// List of nodes (possibly multiple if the node split)
+    fn rebuild_with_mutations(&mut self, node: Node, mutations: &[(Vec<u8>, Vec<u8>)]) -> Vec<Node> {
         if mutations.is_empty() {
             // No mutations for this subtree - REUSE it!
-            return node;
+            return vec![node];
         }
 
-        if node.is_leaf {
-            // Leaf node: merge old data with mutations
-            // Avoid cloning by building vec of references, then only clone what we need
-            let merged = self.merge_sorted_from_node(&node, mutations);
+        // Collect all existing items from this subtree
+        let existing_items = self.collect_all_items(&node);
 
-            // Build new leaf nodes (may split if too large)
-            let new_leaves = self.build_leaves(&merged);
+        // Convert mutations to Arc format and merge
+        let mutations_arc: Vec<(Arc<[u8]>, Arc<[u8]>)> = mutations
+            .iter()
+            .map(|(k, v)| (Arc::from(k.as_slice()), Arc::from(v.as_slice())))
+            .collect();
 
-            if new_leaves.len() == 1 {
-                // Move out of Vec instead of cloning
-                return new_leaves.into_iter().next().unwrap();
+        let merged = self.merge_sorted(&existing_items, &mutations_arc);
+
+        // Rebuild leaves from the merged items
+        self.build_leaves(&merged)
+    }
+
+    /// Merge two sorted lists of (key, value) pairs
+    fn merge_sorted(
+        &self,
+        old_items: &[(Arc<[u8]>, Arc<[u8]>)],
+        new_items: &[(Arc<[u8]>, Arc<[u8]>)],
+    ) -> Vec<(Arc<[u8]>, Arc<[u8]>)> {
+        let mut result = Vec::with_capacity(old_items.len() + new_items.len());
+        let mut i = 0;
+        let mut j = 0;
+
+        while i < old_items.len() && j < new_items.len() {
+            if old_items[i].0.as_ref() < new_items[j].0.as_ref() {
+                result.push(old_items[i].clone());
+                i += 1;
+            } else if old_items[i].0.as_ref() == new_items[j].0.as_ref() {
+                // New value overwrites old
+                result.push(new_items[j].clone());
+                i += 1;
+                j += 1;
             } else {
-                // Multiple leaves - need parent (may recursively split if too many)
-                return self.build_internal_from_children(new_leaves);
-            }
-        } else {
-            // Internal node: partition mutations to children and rebuild recursively
-            let mut new_children = Vec::new();
-            let mut mut_idx = 0;
-
-            for (i, child_hash) in node.values.iter().enumerate() {
-                // Find mutations for this child by tracking start and end indices
-                let start_idx = mut_idx;
-
-                while mut_idx < mutations.len() {
-                    let key = &mutations[mut_idx].0;
-
-                    // Determine if this mutation belongs to this child
-                    let belongs_here = if i == 0 {
-                        // First child: all keys < first separator
-                        node.keys.is_empty() || key.as_slice() < node.keys[0].as_ref()
-                    } else if i < node.keys.len() {
-                        // Middle child: separator[i-1] <= key < separator[i]
-                        key.as_slice() < node.keys[i].as_ref()
-                    } else {
-                        // Last child: all remaining keys
-                        true
-                    };
-
-                    if belongs_here {
-                        mut_idx += 1;
-                    } else {
-                        break;
-                    }
-                }
-
-                // Pass slice of mutations instead of cloning
-                let child_mutations = &mutations[start_idx..mut_idx];
-
-                // Rebuild child (or reuse if no mutations)
-                let child_hash_vec = child_hash.to_vec();
-                if let Ok(Some(child_node)) = self.store.get_node(&child_hash_vec) {
-                    // Dereference Arc to get owned Node for rebuilding
-                    let new_child = self.rebuild_with_mutations((*child_node).clone(), child_mutations);
-                    new_children.push(new_child);
-                }
-            }
-
-            // Now rebuild internal structure from new children
-            if new_children.len() == 1 {
-                // Single child - move it out instead of cloning
-                return new_children.into_iter().next().unwrap();
-            } else {
-                // Build new internal node(s) from children
-                return self.build_internal_from_children(new_children);
+                result.push(new_items[j].clone());
+                j += 1;
             }
         }
+
+        // Append remaining
+        while i < old_items.len() {
+            result.push(old_items[i].clone());
+            i += 1;
+        }
+        while j < new_items.len() {
+            result.push(new_items[j].clone());
+            j += 1;
+        }
+
+        result
     }
 
     /// Get the first actual key in a node's subtree.
@@ -313,7 +362,12 @@ impl ProllyTree {
         }
     }
 
-    /// Build a balanced internal tree from a list of children.
+    /// Build an internal tree from a list of children using per-child boundary detection.
+    ///
+    /// Each child independently decides if it's a boundary based on its first key's hash.
+    /// A child is a boundary (last child in a node) if hash(seed, first_key) < pattern.
+    /// This ensures insertion-order independence since split decisions don't
+    /// depend on previous children.
     fn build_internal_from_children(&mut self, children: Vec<Node>) -> Node {
         if children.is_empty() {
             panic!("Cannot build internal node with no children");
@@ -323,73 +377,52 @@ impl ProllyTree {
             return children[0].clone();
         }
 
-        // Calculate how many internal nodes we need at this level
-        let num_internal_nodes = std::cmp::max(2, (children.len() + TARGET_FANOUT - 1) / TARGET_FANOUT);
-
-        // Calculate children per internal node (distribute evenly)
-        let children_per_node = children.len() / num_internal_nodes;
-        let extra_children = children.len() % num_internal_nodes;
-
-        // Build internal nodes with balanced distribution
+        // Build internal nodes using size-aware boundary detection
         let mut internal_nodes = Vec::new();
-        let mut child_idx = 0;
+        let mut current_children: Vec<&Node> = Vec::new();
 
-        for node_num in 0..num_internal_nodes {
-            // Some nodes get one extra child to distribute the remainder
-            let node_size = children_per_node + if node_num < extra_children { 1 } else { 0 };
+        for (i, child) in children.iter().enumerate() {
+            current_children.push(child);
 
-            // Don't create nodes that are too small (merge with previous)
-            if node_size < MIN_FANOUT && !internal_nodes.is_empty() && node_num == num_internal_nodes - 1 {
-                // Last node is too small - merge with previous node
-                let node_children = &children[child_idx..child_idx + node_size];
-                let mut additions: Vec<(Hash, Option<Arc<[u8]>>)> = Vec::new();
+            // Get boundary key for this child (first key in subtree)
+            let boundary_key = self.get_first_key(child);
 
-                for child in node_children {
-                    let child_hash = self.store_node(child.clone());
-                    let separator = self.get_first_key(child);
-                    additions.push((child_hash, separator));
-                }
+            // Use size-aware splitting, or force split on last child
+            let is_last = i == children.len() - 1;
+            let split = if let Some(ref key) = boundary_key {
+                self.should_split(key.as_ref(), current_children.len()) || is_last
+            } else {
+                is_last // No key, only split if last
+            };
 
-                let prev_node: &mut Node = internal_nodes.last_mut().unwrap();
-                for (child_hash, separator) in additions {
-                    prev_node.values.push(Arc::from(child_hash));
-                    if let Some(sep) = separator {
-                        if prev_node.keys.len() < prev_node.values.len() - 1 {
-                            prev_node.keys.push(sep);
+            if split && !current_children.is_empty() {
+                // Create internal node from current children
+                let mut internal_node = Node::new_internal();
+
+                for (j, c) in current_children.iter().enumerate() {
+                    let node_hash = self.store_node((*c).clone());
+                    internal_node.values.push(Arc::from(node_hash));
+
+                    // Add separator key (first key of next child)
+                    if j < current_children.len() - 1 {
+                        let next_child = current_children[j + 1];
+                        if let Some(separator) = self.get_first_key(next_child) {
+                            internal_node.keys.push(separator);
                         }
                     }
                 }
 
-                child_idx += node_size;
-                continue;
+                internal_nodes.push(internal_node);
+
+                // Reset for next internal node
+                current_children = Vec::new();
             }
-
-            // Create new internal node
-            let mut internal_node = Node::new_internal();
-            let node_children = &children[child_idx..child_idx + node_size];
-
-            for (i, child) in node_children.iter().enumerate() {
-                let child_hash = self.store_node(child.clone());
-                internal_node.values.push(Arc::from(child_hash));
-
-                // Add separator key (first key of next child)
-                if i < node_children.len() - 1 {
-                    let next_child = &node_children[i + 1];
-                    if let Some(separator) = self.get_first_key(next_child) {
-                        internal_node.keys.push(separator);
-                    }
-                }
-            }
-
-            internal_nodes.push(internal_node);
-            child_idx += node_size;
         }
 
-        // If we only created one internal node, return it directly
+        // If we only created one internal node with a single child, unwrap it
         if internal_nodes.len() == 1 {
             let node = internal_nodes.into_iter().next().unwrap();
             if node.values.len() == 1 {
-                // Unwrap single-child internal node
                 let child_hash = node.values[0].to_vec();
                 if let Ok(Some(child)) = self.store.get_node(&child_hash) {
                     return (*child).clone();
@@ -402,47 +435,12 @@ impl ProllyTree {
         self.build_internal_from_children(internal_nodes)
     }
 
-    /// Merge node's keys/values with mutations without initial cloning
-    fn merge_sorted_from_node(
-        &self,
-        node: &Node,
-        mutations: &[(Vec<u8>, Vec<u8>)],
-    ) -> Vec<(Arc<[u8]>, Arc<[u8]>)> {
-        let mut result = Vec::with_capacity(node.keys.len() + mutations.len());
-        let mut i = 0;
-        let mut j = 0;
-
-        while i < node.keys.len() && j < mutations.len() {
-            if node.keys[i].as_ref() < mutations[j].0.as_slice() {
-                result.push((node.keys[i].clone(), node.values[i].clone()));
-                i += 1;
-            } else if node.keys[i].as_ref() == mutations[j].0.as_slice() {
-                // New value overwrites old
-                result.push((Arc::from(mutations[j].0.as_slice()), Arc::from(mutations[j].1.as_slice())));
-                i += 1;
-                j += 1;
-            } else {
-                result.push((Arc::from(mutations[j].0.as_slice()), Arc::from(mutations[j].1.as_slice())));
-                j += 1;
-            }
-        }
-
-        // Append remaining old items
-        while i < node.keys.len() {
-            result.push((node.keys[i].clone(), node.values[i].clone()));
-            i += 1;
-        }
-
-        // Append remaining mutations
-        while j < mutations.len() {
-            result.push((Arc::from(mutations[j].0.as_slice()), Arc::from(mutations[j].1.as_slice())));
-            j += 1;
-        }
-
-        result
-    }
-
-    /// Build leaf nodes from sorted items using rolling hash for splits.
+    /// Build leaf nodes from sorted items using per-item boundary detection.
+    ///
+    /// Each item independently decides if it's a boundary based on its own hash.
+    /// An item is a boundary (last item in a node) if hash(seed, key) < pattern.
+    /// This ensures insertion-order independence since split decisions don't
+    /// depend on previous items.
     fn build_leaves(&self, items: &[(Arc<[u8]>, Arc<[u8]>)]) -> Vec<Node> {
         if items.is_empty() {
             return vec![Node::new_leaf()];
@@ -451,21 +449,16 @@ impl ProllyTree {
         let mut leaves = Vec::new();
         let mut current_keys: Vec<Arc<[u8]>> = Vec::new();
         let mut current_values: Vec<Arc<[u8]>> = Vec::new();
-        let mut roll_hash = self.seed;
 
         for (i, (key, value)) in items.iter().enumerate() {
             current_keys.push(key.clone());
             current_values.push(value.clone());
 
-            // Update rolling hash with the key and value bytes
-            roll_hash = self.rolling_hash(roll_hash, key.as_ref());
-            roll_hash = self.rolling_hash(roll_hash, value.as_ref());
+            // Use size-aware splitting, or force split on last item
+            let is_last = i == items.len() - 1;
+            let split = self.should_split(key.as_ref(), current_keys.len()) || is_last;
 
-            // Split if: (1) have minimum entries AND hash below pattern OR (2) last item
-            let has_min = current_keys.len() >= MIN_NODE_SIZE;
-            let should_split = (has_min && roll_hash < self.pattern) || (i == items.len() - 1);
-
-            if should_split && !current_keys.is_empty() {
+            if split && !current_keys.is_empty() {
                 let mut leaf = Node::new_leaf();
                 leaf.keys = current_keys;
                 leaf.values = current_values;
@@ -475,7 +468,6 @@ impl ProllyTree {
                 // Reset for next leaf
                 current_keys = Vec::new();
                 current_values = Vec::new();
-                roll_hash = self.seed;
             }
         }
 
@@ -620,5 +612,81 @@ mod tests {
 
         // Second insert should reuse nodes
         assert!(stats2.nodes_reused > 0 || stats2.nodes_created == 0);
+    }
+
+    #[test]
+    fn test_insertion_order_independence() {
+        // Test that inserting data in different batch sizes produces identical trees
+        let pattern = 0.5; // High split probability to trigger many splits
+        let num_items = 100;
+
+        // Generate all data
+        let all_data: Vec<(Vec<u8>, Vec<u8>)> = (0..num_items)
+            .map(|i| (format!("{:05}", i).into_bytes(), format!("value_{}", i).into_bytes()))
+            .collect();
+
+        // Test 1: Insert all at once
+        let mut tree1 = ProllyTree::new(pattern, 42, None);
+        tree1.insert_batch(all_data.clone(), false);
+        let hash1 = tree1.get_root_hash();
+
+        // Test 2: Insert in two batches
+        let mut tree2 = ProllyTree::new(pattern, 42, None);
+        let half = num_items / 2;
+        let batch1: Vec<(Vec<u8>, Vec<u8>)> = (0..half)
+            .map(|i| (format!("{:05}", i).into_bytes(), format!("value_{}", i).into_bytes()))
+            .collect();
+        let batch2: Vec<(Vec<u8>, Vec<u8>)> = (half..num_items)
+            .map(|i| (format!("{:05}", i).into_bytes(), format!("value_{}", i).into_bytes()))
+            .collect();
+        tree2.insert_batch(batch1, false);
+        tree2.insert_batch(batch2, false);
+        let hash2 = tree2.get_root_hash();
+
+        // Test 3: Insert in 10 batches
+        let mut tree3 = ProllyTree::new(pattern, 42, None);
+        let batch_size = num_items / 10;
+        for batch_num in 0..10 {
+            let start = batch_num * batch_size;
+            let end = start + batch_size;
+            let batch: Vec<(Vec<u8>, Vec<u8>)> = (start..end)
+                .map(|i| (format!("{:05}", i).into_bytes(), format!("value_{}", i).into_bytes()))
+                .collect();
+            tree3.insert_batch(batch, false);
+        }
+        let hash3 = tree3.get_root_hash();
+
+        // All should produce identical hashes
+        assert_eq!(hash1, hash2, "Single batch vs 2 batches should match");
+        assert_eq!(hash1, hash3, "Single batch vs 10 batches should match");
+    }
+
+    #[test]
+    fn test_insertion_order_independence_minimal() {
+        // Minimal test case with just 10 items and high split probability
+        let pattern = 0.5;
+
+        let all_data: Vec<(Vec<u8>, Vec<u8>)> = (0..10)
+            .map(|i| (format!("{:05}", i).into_bytes(), format!("value_{}", i).into_bytes()))
+            .collect();
+
+        // All at once
+        let mut tree1 = ProllyTree::new(pattern, 42, None);
+        tree1.insert_batch(all_data.clone(), false);
+        let hash1 = tree1.get_root_hash();
+
+        // Two batches of 5
+        let mut tree2 = ProllyTree::new(pattern, 42, None);
+        let batch1: Vec<(Vec<u8>, Vec<u8>)> = (0..5)
+            .map(|i| (format!("{:05}", i).into_bytes(), format!("value_{}", i).into_bytes()))
+            .collect();
+        let batch2: Vec<(Vec<u8>, Vec<u8>)> = (5..10)
+            .map(|i| (format!("{:05}", i).into_bytes(), format!("value_{}", i).into_bytes()))
+            .collect();
+        tree2.insert_batch(batch1, false);
+        tree2.insert_batch(batch2, false);
+        let hash2 = tree2.get_root_hash();
+
+        assert_eq!(hash1, hash2, "Trees should be identical regardless of batch size");
     }
 }
