@@ -1122,6 +1122,7 @@ fn main() -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use prolly_core::ProllyTree;
+    use rusqlite::Connection;
     use tempfile::TempDir;
 
     fn create_test_repo(repo_path: &PathBuf) -> Repo {
@@ -1167,7 +1168,8 @@ mod tests {
         init_repo(repo_path.clone(), "test@example.com".to_string()).unwrap();
 
         // Call the import function
-        let result = import_sqlite(sqlite_path, repo_path.clone(), 0, 100, false);
+        let repo = open_repo(&repo_path, 100).unwrap();
+        let result = sqlite_import::import_sqlite(&repo, &repo_path, &sqlite_path, 0, false);
         assert!(result.is_ok());
 
         // Verify the repo was created
