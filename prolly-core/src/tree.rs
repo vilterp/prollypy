@@ -16,10 +16,11 @@ use crate::node::Node;
 use crate::store::{BlockStore, MemoryBlockStore};
 use crate::Hash;
 
-// Chunking constants
-const MIN_CHUNK_SIZE: usize = 2;      // Minimum items per node (never split below this)
-const MAX_CHUNK_SIZE: usize = 1024;   // Maximum items per node (always split at this)
-const TARGET_CHUNK_SIZE: usize = 64;  // Target items per node (threshold doubles every target_size items)
+// Chunking constants (byte-based, tuned for typical row sizes)
+const MIN_CHUNK_BYTES: usize = 4096;       // Minimum bytes per node (never split below this) - 4KB
+const MAX_CHUNK_BYTES: usize = 262144;     // Maximum bytes per node (always split at this) - 256KB
+const TARGET_CHUNK_BYTES: usize = 65536;   // Target bytes per node - threshold doubles every 64KB
+const HASH_SIZE: usize = 16;               // Size of child hashes in internal nodes
 
 /// Statistics for a single batch operation
 #[derive(Debug, Clone, Default)]
@@ -115,31 +116,31 @@ impl ProllyTree {
         hash64 as u32 // Take lower 32 bits
     }
 
-    /// Determine if we should split after this item using size-aware threshold.
+    /// Determine if we should split after this item using byte-size-aware threshold.
     ///
-    /// The threshold grows with chunk size: starts at self.pattern, doubles every
-    /// TARGET_CHUNK_SIZE items. This ensures:
+    /// The threshold grows with chunk byte size: starts at self.pattern, doubles every
+    /// TARGET_CHUNK_BYTES. This ensures:
     /// - Small chunks: low split probability (controlled by pattern)
     /// - Large chunks: increasing split probability
-    /// - MAX_CHUNK_SIZE: forced split
+    /// - MAX_CHUNK_BYTES: forced split
     ///
     /// Maintains insertion-order independence since decision only depends on:
     /// - The key's hash (deterministic)
-    /// - Current chunk size (same for same key sequence)
-    fn should_split(&self, key: &[u8], current_size: usize) -> bool {
-        if current_size < MIN_CHUNK_SIZE {
+    /// - Current chunk byte size (same for same key sequence)
+    fn should_split(&self, key: &[u8], chunk_bytes: usize) -> bool {
+        if chunk_bytes < MIN_CHUNK_BYTES {
             return false;
         }
-        if current_size >= MAX_CHUNK_SIZE {
+        if chunk_bytes >= MAX_CHUNK_BYTES {
             return true;
         }
 
         let key_hash = self.rolling_hash(self.seed, key);
 
-        // Threshold grows exponentially with size
-        // At size=TARGET_CHUNK_SIZE, threshold = pattern * 2
-        // At size=2*TARGET_CHUNK_SIZE, threshold = pattern * 4
-        let size_factor = 2.0_f64.powf(current_size as f64 / TARGET_CHUNK_SIZE as f64);
+        // Threshold grows exponentially with byte size
+        // At size=TARGET_CHUNK_BYTES (4KB), threshold = pattern * 2
+        // At size=2*TARGET_CHUNK_BYTES (8KB), threshold = pattern * 4
+        let size_factor = 2.0_f64.powf(chunk_bytes as f64 / TARGET_CHUNK_BYTES as f64);
         let adjusted_threshold = ((self.pattern as f64) * size_factor).min(i32::MAX as f64) as u32;
 
         key_hash < adjusted_threshold
@@ -362,12 +363,10 @@ impl ProllyTree {
         }
     }
 
-    /// Build an internal tree from a list of children using per-child boundary detection.
+    /// Build an internal tree from a list of children using byte-size-aware boundary detection.
     ///
-    /// Each child independently decides if it's a boundary based on its first key's hash.
-    /// A child is a boundary (last child in a node) if hash(seed, first_key) < pattern.
-    /// This ensures insertion-order independence since split decisions don't
-    /// depend on previous children.
+    /// Each child independently decides if it's a boundary based on its first key's hash
+    /// and the cumulative byte size of the current internal node.
     fn build_internal_from_children(&mut self, children: Vec<Node>) -> Node {
         if children.is_empty() {
             panic!("Cannot build internal node with no children");
@@ -377,9 +376,10 @@ impl ProllyTree {
             return children[0].clone();
         }
 
-        // Build internal nodes using size-aware boundary detection
+        // Build internal nodes using byte-size-aware boundary detection
         let mut internal_nodes = Vec::new();
         let mut current_children: Vec<&Node> = Vec::new();
+        let mut current_bytes: usize = 0;
 
         for (i, child) in children.iter().enumerate() {
             current_children.push(child);
@@ -387,10 +387,16 @@ impl ProllyTree {
             // Get boundary key for this child (first key in subtree)
             let boundary_key = self.get_first_key(child);
 
-            // Use size-aware splitting, or force split on last child
+            // Track byte size: hash (16 bytes) + separator key size
+            current_bytes += HASH_SIZE;
+            if let Some(ref key) = boundary_key {
+                current_bytes += key.len();
+            }
+
+            // Use byte-size-aware splitting, or force split on last child
             let is_last = i == children.len() - 1;
             let split = if let Some(ref key) = boundary_key {
-                self.should_split(key.as_ref(), current_children.len()) || is_last
+                self.should_split(key.as_ref(), current_bytes) || is_last
             } else {
                 is_last // No key, only split if last
             };
@@ -416,6 +422,7 @@ impl ProllyTree {
 
                 // Reset for next internal node
                 current_children = Vec::new();
+                current_bytes = 0;
             }
         }
 
@@ -435,12 +442,10 @@ impl ProllyTree {
         self.build_internal_from_children(internal_nodes)
     }
 
-    /// Build leaf nodes from sorted items using per-item boundary detection.
+    /// Build leaf nodes from sorted items using byte-size-aware boundary detection.
     ///
-    /// Each item independently decides if it's a boundary based on its own hash.
-    /// An item is a boundary (last item in a node) if hash(seed, key) < pattern.
-    /// This ensures insertion-order independence since split decisions don't
-    /// depend on previous items.
+    /// Each item independently decides if it's a boundary based on its own hash
+    /// and the cumulative byte size of the chunk.
     fn build_leaves(&self, items: &[(Arc<[u8]>, Arc<[u8]>)]) -> Vec<Node> {
         if items.is_empty() {
             return vec![Node::new_leaf()];
@@ -449,14 +454,16 @@ impl ProllyTree {
         let mut leaves = Vec::new();
         let mut current_keys: Vec<Arc<[u8]>> = Vec::new();
         let mut current_values: Vec<Arc<[u8]>> = Vec::new();
+        let mut current_bytes: usize = 0;
 
         for (i, (key, value)) in items.iter().enumerate() {
             current_keys.push(key.clone());
             current_values.push(value.clone());
+            current_bytes += key.len() + value.len();
 
-            // Use size-aware splitting, or force split on last item
+            // Use byte-size-aware splitting, or force split on last item
             let is_last = i == items.len() - 1;
-            let split = self.should_split(key.as_ref(), current_keys.len()) || is_last;
+            let split = self.should_split(key.as_ref(), current_bytes) || is_last;
 
             if split && !current_keys.is_empty() {
                 let mut leaf = Node::new_leaf();
@@ -468,6 +475,7 @@ impl ProllyTree {
                 // Reset for next leaf
                 current_keys = Vec::new();
                 current_values = Vec::new();
+                current_bytes = 0;
             }
         }
 

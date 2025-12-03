@@ -14,10 +14,10 @@ from .node import Node
 from .store import BlockStore, MemoryBlockStore, CachedFSBlockStore
 from .cursor import TreeCursor
 
-# Chunking constants
-MIN_CHUNK_SIZE = 2      # Minimum items per node (never split below this)
-MAX_CHUNK_SIZE = 1024   # Maximum items per node (always split at this)
-TARGET_CHUNK_SIZE = 64  # Target items per node (threshold doubles every target_size items)
+# Chunking constants (byte-based, tuned for typical row sizes)
+MIN_CHUNK_BYTES = 4096       # Minimum bytes per node (never split below this) - 4KB
+MAX_CHUNK_BYTES = 262144     # Maximum bytes per node (always split at this) - 256KB
+TARGET_CHUNK_BYTES = 65536   # Target bytes per node - threshold doubles every 64KB
 
 
 class ProllyTree:
@@ -65,31 +65,33 @@ class ProllyTree:
         # Take first 4 bytes and convert to uint32
         return int.from_bytes(hash_bytes[:4], byteorder='big')
 
-    def _should_split(self, key: bytes, current_size: int) -> bool:
+    def _should_split(self, key: bytes, chunk_bytes: int) -> bool:
         """
-        Determine if we should split after this item using size-aware threshold.
+        Determine if we should split after this item using byte-size-aware threshold.
 
-        The threshold grows with chunk size: starts at self.pattern, doubles every
-        TARGET_CHUNK_SIZE items. This ensures:
+        The threshold grows with chunk byte size: starts at self.pattern, doubles every
+        TARGET_CHUNK_BYTES. This ensures:
         - Small chunks: low split probability (controlled by pattern)
         - Large chunks: increasing split probability
-        - MAX_CHUNK_SIZE: forced split
+        - MAX_CHUNK_BYTES: forced split
 
         Maintains insertion-order independence since decision only depends on:
         - The key's hash (deterministic)
-        - Current chunk size (same for same key sequence)
+        - Current chunk byte size (same for same key sequence)
         """
-        if current_size < MIN_CHUNK_SIZE:
+        if chunk_bytes < MIN_CHUNK_BYTES:
             return False
-        if current_size >= MAX_CHUNK_SIZE:
+        if chunk_bytes >= MAX_CHUNK_BYTES:
             return True
 
-        key_hash = self._rolling_hash(self.seed, key)
+        # Convert string to bytes if needed
+        key_bytes = key.encode('utf-8') if isinstance(key, str) else key
+        key_hash = self._rolling_hash(self.seed, key_bytes)
 
-        # Threshold grows exponentially with size
-        # At size=TARGET_CHUNK_SIZE, threshold = pattern * 2
-        # At size=2*TARGET_CHUNK_SIZE, threshold = pattern * 4
-        size_factor = 2 ** (current_size / TARGET_CHUNK_SIZE)
+        # Threshold grows exponentially with byte size
+        # At size=TARGET_CHUNK_BYTES (4KB), threshold = pattern * 2
+        # At size=2*TARGET_CHUNK_BYTES (8KB), threshold = pattern * 4
+        size_factor = 2 ** (chunk_bytes / TARGET_CHUNK_BYTES)
         adjusted_threshold = int(min(self.pattern * size_factor, 2**31))  # Cap at 50%
 
         return key_hash < adjusted_threshold
@@ -289,12 +291,10 @@ class ProllyTree:
 
     def _build_internal_from_children(self, children: list[Node], verbose: bool = False) -> Node:
         """
-        Build an internal tree from a list of children using per-child boundary detection.
+        Build an internal tree from a list of children using byte-size-aware boundary detection.
 
-        Each child independently decides if it's a boundary based on its first key's hash.
-        A child is a boundary (last child in a node) if _should_split returns True for
-        the child's first key. This ensures insertion-order independence since split
-        decisions only depend on the key and current chunk size.
+        Each child independently decides if it's a boundary based on its first key's hash
+        and the cumulative byte size of the current internal node.
 
         Args:
             children: List of Node objects
@@ -309,9 +309,11 @@ class ProllyTree:
             # Single child - just return it (no need for parent)
             return children[0]
 
-        # Build internal nodes using size-aware boundary detection
+        # Build internal nodes using byte-size-aware boundary detection
         internal_nodes = []
         current_children = []
+        current_bytes = 0
+        HASH_SIZE = 16  # Each child hash is 16 bytes
 
         for i, child in enumerate(children):
             current_children.append(child)
@@ -319,10 +321,16 @@ class ProllyTree:
             # Get boundary key for this child (first key in subtree)
             boundary_key = self._get_first_key(child)
 
-            # Use size-aware splitting, or force split on last child
+            # Track byte size: hash (16 bytes) + separator key size
+            current_bytes += HASH_SIZE
+            if boundary_key is not None:
+                key_bytes = boundary_key.encode('utf-8') if isinstance(boundary_key, str) else boundary_key
+                current_bytes += len(key_bytes)
+
+            # Use byte-size-aware splitting, or force split on last child
             is_last = (i == len(children) - 1)
             if boundary_key is not None:
-                should_split = self._should_split(boundary_key, len(current_children)) or is_last
+                should_split = self._should_split(boundary_key, current_bytes) or is_last
             else:
                 should_split = is_last  # No key, only split if last
 
@@ -355,6 +363,7 @@ class ProllyTree:
 
                 # Reset for next internal node
                 current_children = []
+                current_bytes = 0
 
         # If we only created one internal node with a single child, unwrap it
         if len(internal_nodes) == 1:
@@ -394,12 +403,12 @@ class ProllyTree:
 
     def _build_leaves(self, items: list[tuple[bytes, bytes]]) -> list[Node]:
         """
-        Build leaf nodes from sorted items using size-aware boundary detection.
+        Build leaf nodes from sorted items using byte-size-aware boundary detection.
 
         Each item independently decides if it's a boundary based on its own hash
-        and the current chunk size. Split probability increases as chunks grow.
+        and the current chunk byte size. Split probability increases as chunks grow.
         This ensures insertion-order independence since split decisions only
-        depend on the key and current chunk size.
+        depend on the key and current chunk byte size.
         """
         if not items:
             return []
@@ -407,14 +416,20 @@ class ProllyTree:
         leaves = []
         current_keys = []
         current_values = []
+        current_bytes = 0
 
         for i, (key, value) in enumerate(items):
+            # Convert to bytes if needed for size calculation
+            key_bytes = key.encode('utf-8') if isinstance(key, str) else key
+            value_bytes = value.encode('utf-8') if isinstance(value, str) else value
+
             current_keys.append(key)
             current_values.append(value)
+            current_bytes += len(key_bytes) + len(value_bytes)
 
-            # Use size-aware splitting, or force split on last item
+            # Use byte-size-aware splitting, or force split on last item
             is_last = (i == len(items) - 1)
-            should_split = self._should_split(key, len(current_keys)) or is_last
+            should_split = self._should_split(key, current_bytes) or is_last
 
             if should_split and current_keys:
                 leaf = Node(is_leaf=True)
@@ -430,6 +445,7 @@ class ProllyTree:
                 # Reset for next leaf
                 current_keys = []
                 current_values = []
+                current_bytes = 0
 
         return leaves if leaves else [Node(is_leaf=True)]
 
